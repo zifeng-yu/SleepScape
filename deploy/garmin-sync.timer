@@ -1,0 +1,13 @@
+# Template only: this repository does not install or enable timers.
+[Unit]
+Description=SleepScape Garmin sync at 08:30 and 12:30 Shanghai time
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Shanghai
+OnCalendar=*-*-* 12:30:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=garmin-sync.service
+
+[Install]
+WantedBy=timers.target

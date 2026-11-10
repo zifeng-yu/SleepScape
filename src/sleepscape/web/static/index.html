@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light" />
+        <meta name="theme-color" content="#f5f8fa" />
+        <title>SleepScape · 睡眠观测</title>
+        <link rel="stylesheet" href="/static/style.css" />
+        <script type="module" src="/static/app.js"></script>
+    </head>
+    <body>
+        <a href="#main" class="skip-link">跳到内容</a>
+        <aside class="sidebar">
+            <a
+                class="brand"
+                href="/?view=night"
+                aria-label="SleepScape 夜晚详情"
+                ><span class="brand-icon"
+                    ><svg viewBox="0 0 32 32" aria-hidden="true">
+                        <path
+                            d="M23.5 21A11.5 11.5 0 0 1 11 5a11.5 11.5 0 1 0 16 12.5A11.4 11.4 0 0 1 23.5 21Z"
+                        />
+                        <path d="M23 4v6m-3-3h6" /></svg></span
+                ><span>SleepScape<small>睡眠与日常的观测记录</small></span></a
+            >
+            <div class="nav-label">我的观测</div>
+            <nav aria-label="主要导航">
+                <a href="/?view=night" data-view="night"
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                            d="M20.5 14A8.5 8.5 0 0 1 10 3.5 8.5 8.5 0 1 0 20.5 14Z"
+                        /></svg
+                    ><span>夜晚详情</span></a
+                >
+                <a href="/?view=history" data-view="history"
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                        <rect x="3" y="5" width="18" height="16" rx="3" />
+                        <path
+                            d="M7 3v4m10-4v4M3 11h18m-13 4h1m5 0h1m-7 3h1"
+                        /></svg
+                    ><span>历史记录</span></a
+                >
+                <a href="/?view=status" data-view="status"
+                    ><svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 12h4l3-8 4 16 3-8h4" /></svg
+                    ><span>数据状态</span
+                    ><span class="nav-status-dot" id="nav-status-dot"></span
+                ></a>
+            </nav>
+            <div class="sidebar-bottom">
+                <span class="small-dot"></span
+                ><span>个人睡眠观测<small>记录变化，积累线索</small></span>
+            </div>
+        </aside>
+        <main id="main" tabindex="-1">
+            <header class="page-header">
+                <div>
+                    <div class="eyebrow" id="page-eyebrow">NIGHT OVERVIEW</div>
+                    <h1 id="page-title">夜晚详情</h1>
+                    <p id="page-subtitle">以醒来的日期，记录每一晚。</p>
+                </div>
+                <div class="header-meta">
+                    <span id="sync-label">正在读取数据</span
+                    ><button
+                        id="refresh-button"
+                        class="icon-button"
+                        aria-label="重新读取本地数据"
+                        title="重新读取本地数据"
+                    >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            </header>
+            <div id="notice" class="notice" role="status" hidden></div>
+            <div id="page-content" aria-live="polite"></div>
+            <footer class="page-footer">
+                <span>SleepScape</span
+                ><span>数据来自 Garmin · 设备估算用于个人观测</span
+                ><span id="footer-timezone"></span>
+            </footer>
+        </main>
+        <noscript
+            ><p class="notice">
+                请在浏览器中启用 JavaScript，以查看本地睡眠记录。
+            </p></noscript
+        >
+    </body>
+</html>

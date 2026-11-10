@@ -1,0 +1,11 @@
+# Replace the example hostname with your domain before use.
+# In /opt/sleepscape/.env configure:
+# SLEEPSCAPE_WEB_AUTH_FILE=.secrets/dashboard-auth.json
+# SLEEPSCAPE_WEB_ALLOWED_HOSTS=["sleep.example.com"]
+# Create the hash interactively with: .venv/bin/sleepscape web-password
+# Authentication is enforced by SleepScape. Preserve Authorization (the default).
+# Never serve the repository, data/, .env or .secrets/ as a static directory.
+sleep.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000
+}

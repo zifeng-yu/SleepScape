@@ -1,0 +1,25 @@
+# Template only: review paths and configure dashboard authentication before enabling.
+[Unit]
+Description=SleepScape private dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=sleepscape
+Group=sleepscape
+WorkingDirectory=/opt/sleepscape
+EnvironmentFile=/opt/sleepscape/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sleepscape/.venv/bin/uvicorn sleepscape.app:create_app --factory --host 127.0.0.1 --port 8000 --workers 1 --no-access-log --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sleepscape/data
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

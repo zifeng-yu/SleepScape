@@ -1,0 +1,23 @@
+# Template only: no Key/token belongs in this file or ExecStart arguments.
+[Unit]
+Description=SleepScape bounded Garmin synchronization
+Wants=network-online.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+User=sleepscape
+Group=sleepscape
+WorkingDirectory=/opt/sleepscape
+EnvironmentFile=/opt/sleepscape/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sleepscape/.venv/bin/sleepscape garmin-sync
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sleepscape/data /opt/sleepscape/.secrets
+MemoryMax=768M
+# No automatic immediate restart: the next timer must respect Retry-After.
