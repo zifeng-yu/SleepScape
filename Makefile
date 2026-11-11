@@ -1,4 +1,4 @@
-.PHONY: install run doctor check format browser-install browser-check clean clean-dev firmware-setup firmware-build firmware-check firmware-flash firmware-configure
+.PHONY: install run doctor check format browser-install browser-check clean clean-dev firmware-setup firmware-build firmware-check firmware-flash firmware-first-flash firmware-status firmware-configure
 
 install:
 	uv sync --locked
@@ -41,6 +41,12 @@ firmware-check:
 
 firmware-flash:
 	uv run --locked python tools/firmware.py flash --port "$(PORT)"
+
+firmware-first-flash:
+	uv run --locked python tools/firmware.py first-flash --port "$(PORT)"
+
+firmware-status:
+	uv run --locked python tools/firmware.py status --port "$(PORT)"
 
 firmware-configure:
 	uv run --locked python tools/firmware.py configure --port "$(PORT)"

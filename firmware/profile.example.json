@@ -1,12 +1,36 @@
 {
   "hardware_model": "m5stack-c008-c",
   "hardware_revision": "stock",
-  "firmware_version": "0.1.0",
+  "firmware_version": "0.2.0",
   "temperature_sensor": "dfrobot-sen0528-aht20",
-  "light_sensor": "m5stack-u136-bh1750",
+  "light_sensor": "dfrobot-sen0228-veml7700",
   "microphone": "spm1423",
   "placement_id": "replace-with-actual-placement",
   "calibration_id": "uncalibrated",
   "sound_processing": "pdm-pcm16-fixed-no-agc",
-  "threshold_profile_id": "relative-sound-60s-10db-6db"
+  "threshold_profile_id": "relative-sound-60s-10db-6db",
+  "light_measurement": {
+    "gain": 2.0,
+    "integration_ms": 400,
+    "resolution_lux": 0.0084,
+    "als_conf": 2176,
+    "power_saving_enabled": false,
+    "auto_range": false,
+    "saturation_raw": 65535,
+    "range_min_lux": 0.0,
+    "range_max_lux": 550.4856,
+    "low_light_limit_lux": 0.1,
+    "conversion": "linear",
+    "reference": "vishay-84286-rev1.8-84323-20250306"
+  },
+  "i2c_bus": {
+    "topology": "shared",
+    "hub_model": "dfrobot-dfr0759",
+    "sda_gpio": 21,
+    "scl_gpio": 25,
+    "frequency_hz": 100000,
+    "supply_voltage_v": 3.3,
+    "temperature_address": 56,
+    "light_address": 16
+  }
 }

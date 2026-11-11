@@ -23,7 +23,7 @@
 
 完整压力时序、独立呼吸时序、训练准备度、恢复时间和完整体动曲线不是当前已支持能力。
 `recoveryHeartRate`也不是恢复时间。环境首版计划采集温度、湿度、光照、相对声音汇总和事件；
-选型、采样和上传合同见下文“环境采集合同（计划）”，当前尚无硬件实现或实测环境数据。
+选型、采样和上传合同见下文“环境采集合同”；固件与接收程序已经建立，本轮传感器适配与验证状态见核验报告，尚无实机环境观测。
 
 ## 来源、标准化和修订
 
@@ -166,7 +166,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 ## 环境采集合同
 
 本节是固件、写入API与独立环境存储已实现的共同合同，设备入口默认关闭；**未用真机验收**。UTC查询映射与环境看板呈现仍按本节约定后续实现。严格机器校验在`domain/environment.py`，可重放合成信封见`tests/fixtures/environment-batch.json`。
-合同按测量能力定义，不绑定某一硬件型号；当前测量配置示例为M5 Atom Voice（C008-C）、Gravity AHT20（SEN0528）和DLight（U136）。
+合同按测量能力定义，不绑定某一硬件型号；当前测量配置示例为M5 Atom Voice（C008-C）、Gravity AHT20（SEN0528）、VEML7700（SEN0228）及被动分线模块DFR0759。两传感器使用同一条3.3V I²C总线，SDA21/SCL25、100kHz。
 只启用温度、相对湿度、光照、相对声音；首版没有CO₂或VOC推算CO₂通道。替换型号必须登记新测量配置并验证对应驱动。
 采购、接线和资源可行性见[硬件方案](plans/hardware.md)。本节维护字段与口径，不重复采购步骤。
 
@@ -249,6 +249,38 @@ PCM只在短RAM缓冲中用于聚合，不写Flash、不上传、不输出串口
 `max_1s_rms_dbfs=max(RMS_dBFS_i)`仅是1秒RMS最大值，不是瞬时峰值声压。实现采用足够精度的累加器，防止平方和溢出。
 全零且完整收到的PCM窗口仍以零能量参与分钟能量平均，单秒dB值记null并标`below_numeric_floor`，不输出`-Infinity`；整分钟均为零时分钟dB值也为null。这与未收到PCM的`missing`不同。
 该值是当前设备和处理链下的相对数字强度，不能改名为dBA、用于WHO限值判断，或默认跨设备比较。
+
+### 当前光照测量配置
+
+当前SEN0228档案使用`light_sensor="dfrobot-sen0228-veml7700"`及固件版本`0.2.0`。唯一可复制样例为
+[`firmware/profile.example.json`](../firmware/profile.example.json)，新增的`light_measurement`和`i2c_bus`随不可变档案保存。
+当前组合的完整编译、原生驱动逻辑与接收回归状态以[核验报告](verification.md)为准，尚未验证实物电气和读数。
+
+| 配置 | 当前值与含义 |
+| --- | --- |
+| `gain` / `integration_ms` | 2倍增益、400 ms积分；每秒读取一次 |
+| `als_conf` | 2176，即0x0880；与固定增益/积分时间对应 |
+| `power_saving_enabled` / `auto_range` | 均为false；连续工作、无自动换量程 |
+| `resolution_lux` / `conversion` | 0.0084 lx/count；16位小端原始计数乘该系数，线性换算 |
+| `saturation_raw` | 65535；达到该计数即饱和，该次无效并标`out_of_range`，不写最大值或0代替 |
+| `range_min_lux` / `range_max_lux` | 0至550.4856 lx，对应原始计数0至65534；不是0–120 klx全量程 |
+| `low_light_limit_lux` | 0.1 lx；有效值低于它时保留读数并标`low_light_limit`，是工程提示，不是准确度或检出限认证 |
+| `reference` | `vishay-84286-rev1.8-84323-20250306`，记录本次换算依据 |
+| `i2c_bus` | `topology=shared`、`hub_model=dfrobot-dfr0759`、SDA21/SCL25、100000 Hz、3.3V；温湿度地址56（0x38），光照地址16（0x10） |
+
+启动和传感器恢复初始化后须等待至少403 ms（400 ms积分加3 ms启动时间）；项目按1秒轮询，暖机不足时不产生假0或有效读数。
+400 ms积分表示每秒取得一段积分结果，不能把60个有效秒槽理解为整分钟无间隙捕获所有短促闪光。
+饱和标记为`out_of_range`及`sensor_error`，I²C失败为`bus_error`及`sensor_error`，正常启动预热为`warming`；三者均不进入有效统计。有其他有效样本时保留其分钟mean/min/max，并同时标明有效计数和质量。
+整个分钟没有有效光照读数时数值为null。低光提示按该分钟有效值中的min是否小于0.1 lx判断，其他数据不能默认丢弃或归零。
+
+换算依据为[Vishay数据表84286 Rev.1.8（2024-11-28）](https://www.vishay.com/docs/84286/veml7700.pdf)与
+[应用说明84323（2025-03-06）](https://www.vishay.com/docs/84323/designingveml7700.pdf)。
+DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参数；量化步长不等于测量绝对误差。当前固定档避免自动换档造成解释不明，
+代价是较强室内光/白天可能超量程；需要更宽量程时另定配置和驱动规则并重新验证，不回写已有观测。
+
+上传`schema_version=1`及环境SQLite事实表保持不变。旧测量档案缺少上述两对象时继续保留原样和原哈希，不补写伪造的参数；
+新注册的VEML7700档案必须包含完整两对象。已知C008-C固件0.2.0会严格核对表中固定参数，不能登记另一套虽数学自洽却不符刷入程序的增益、量程或总线参数。接收端按已登记档案验证有效光照范围及低光标记一致性；历史无光照配置对象的记录不套用新阈值，缓存中已写入的质量标记不被新固件追溯重算。
+更换硬件、光照档位或摆位必须使用新的`measurement_profile_id`；旧档案和已采数据属于历史证据，不能作为旧版程序清理。
 
 ### 相对声音事件（工程默认，待真机验证）
 

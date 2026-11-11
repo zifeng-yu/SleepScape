@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -298,6 +299,97 @@ class EnvironmentBatch(Contract):
         return self
 
 
+class LightMeasurement(Contract):
+    """Explicit fixed-gain light conversion; numerical resolution is not accuracy."""
+
+    gain: Annotated[Number, Field(gt=0, le=16)]
+    integration_ms: Annotated[int, Field(strict=True, ge=1, le=1000)]
+    resolution_lux: Annotated[Number, Field(gt=0, le=100)]
+    als_conf: Annotated[int, Field(strict=True, ge=0, le=65535)]
+    power_saving_enabled: bool
+    auto_range: Literal[False]
+    saturation_raw: Annotated[int, Field(strict=True, ge=1, le=65535)]
+    range_min_lux: Annotated[Number, Field(ge=0)]
+    range_max_lux: Annotated[Number, Field(gt=0)]
+    low_light_limit_lux: Annotated[Number, Field(gt=0)]
+    conversion: Literal["linear"]
+    reference: Identifier
+
+    @field_validator("auto_range", mode="before")
+    @classmethod
+    def range_mode_requires_boolean(cls, value):
+        if type(value) is not bool:
+            raise ValueError("auto_range_requires_boolean")
+        return value
+
+    @model_validator(mode="after")
+    def range_matches_conversion(self):
+        maximum = (self.saturation_raw - 1) * self.resolution_lux
+        if self.range_min_lux != 0 or not math.isclose(self.range_max_lux, maximum, rel_tol=1e-12):
+            raise ValueError("light_range_does_not_match_linear_conversion")
+        if not self.range_min_lux < self.low_light_limit_lux < self.range_max_lux:
+            raise ValueError("light_limit_outside_measurement_range")
+        return self
+
+
+class I2CBus(Contract):
+    """Physical sensor connection recorded once per immutable measurement profile."""
+
+    topology: Literal["shared"]
+    hub_model: Identifier
+    sda_gpio: Annotated[int, Field(strict=True, ge=0, le=48)]
+    scl_gpio: Annotated[int, Field(strict=True, ge=0, le=48)]
+    frequency_hz: Annotated[int, Field(strict=True, ge=10000, le=1000000)]
+    supply_voltage_v: Annotated[Number, Field(gt=0, le=5)]
+    temperature_address: Annotated[int, Field(strict=True, ge=8, le=119)]
+    light_address: Annotated[int, Field(strict=True, ge=8, le=119)]
+
+    @model_validator(mode="after")
+    def independent_lines_and_addresses(self):
+        if self.sda_gpio == self.scl_gpio:
+            raise ValueError("i2c_data_and_clock_must_differ")
+        if self.temperature_address == self.light_address:
+            raise ValueError("shared_i2c_sensor_addresses_must_differ")
+        return self
+
+
+# Known released hardware configuration. Native C/profile cross-checks guard this
+# contract against firmware changes; future versions retain the general fields above.
+_C008_C_0_2_LIGHT = {
+    "gain": 2.0,
+    "integration_ms": 400,
+    "resolution_lux": 0.0084,
+    "als_conf": 0x0880,
+    "power_saving_enabled": False,
+    "auto_range": False,
+    "saturation_raw": 65535,
+    "range_min_lux": 0.0,
+    "range_max_lux": 550.4856,
+    "low_light_limit_lux": 0.1,
+    "conversion": "linear",
+    "reference": "vishay-84286-rev1.8-84323-20250306",
+}
+_C008_C_0_2_BUS = {
+    "topology": "shared",
+    "hub_model": "dfrobot-dfr0759",
+    "sda_gpio": 21,
+    "scl_gpio": 25,
+    "frequency_hz": 100000,
+    "supply_voltage_v": 3.3,
+    "temperature_address": 0x38,
+    "light_address": 0x10,
+}
+
+
+def _matches_configuration(actual: dict, expected: dict) -> bool:
+    return actual.keys() == expected.keys() and all(
+        math.isclose(actual[key], value, rel_tol=1e-12, abs_tol=1e-12)
+        if isinstance(value, float)
+        else actual[key] == value
+        for key, value in expected.items()
+    )
+
+
 class MeasurementProfile(Contract):
     """Immutable operational description; strings are bounded identifiers, not free-form logs."""
 
@@ -311,6 +403,8 @@ class MeasurementProfile(Contract):
     calibration_id: Identifier
     sound_processing: Identifier
     threshold_profile_id: Identifier
+    light_measurement: LightMeasurement | None = None
+    i2c_bus: I2CBus | None = None
     sample_rate_hz: Literal[16_000] = 16_000
     pcm_bits: Literal[16] = 16
     audio_channels: Literal[1] = 1
@@ -323,6 +417,32 @@ class MeasurementProfile(Contract):
     event_stop_seconds: Literal[3] = 3
     event_merge_gap_seconds: Literal[2] = 2
 
+    @model_validator(mode="after")
+    def explicit_sensor_configuration(self):
+        if self.hardware_model == "m5stack-c008-c" and self.firmware_version == "0.2.0":
+            if (
+                self.light_sensor != "dfrobot-sen0228-veml7700"
+                or self.temperature_sensor != "dfrobot-sen0528-aht20"
+                or self.light_measurement is None
+                or self.i2c_bus is None
+                or not _matches_configuration(
+                    self.light_measurement.model_dump(), _C008_C_0_2_LIGHT
+                )
+                or not _matches_configuration(self.i2c_bus.model_dump(), _C008_C_0_2_BUS)
+            ):
+                raise ValueError("known_firmware_sensor_configuration_mismatch")
+        if self.light_sensor == "dfrobot-sen0228-veml7700":
+            if self.light_measurement is None or self.i2c_bus is None:
+                raise ValueError("veml7700_requires_measurement_and_bus_profile")
+            if self.i2c_bus.light_address != 0x10:
+                raise ValueError("veml7700_i2c_address_mismatch")
+            if self.light_measurement.integration_ms > self.light_period_ms:
+                raise ValueError("light_integration_exceeds_sample_period")
+        if self.temperature_sensor == "dfrobot-sen0528-aht20" and self.i2c_bus is not None:
+            if self.i2c_bus.temperature_address != 0x38:
+                raise ValueError("aht20_i2c_address_mismatch")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def fixed_parameters_require_integers(cls, values):
@@ -332,6 +452,25 @@ class MeasurementProfile(Contract):
                     if type(values[name]) is not int:
                         raise ValueError("profile_parameter_requires_integer")
         return values
+
+
+def validate_light_profile(record: Record, profile: MeasurementProfile) -> None:
+    """Validate a minute against its declared range; preserve invalid/missing observations."""
+    if record.record_type != "minute" or profile.light_measurement is None:
+        return
+    light = record.metrics.illuminance_lux
+    if not light.valid_count:
+        return
+    specification = profile.light_measurement
+    if light.min < specification.range_min_lux or (
+        light.max > specification.range_max_lux
+        and not math.isclose(light.max, specification.range_max_lux, rel_tol=1e-7, abs_tol=1e-6)
+    ):
+        raise ValueError("illuminance_outside_measurement_profile")
+    # The threshold is a quality hint, not a zero substitute or precision claim.
+    expected_low = light.min < specification.low_light_limit_lux
+    if ("low_light_limit" in light.quality) != expected_low:
+        raise ValueError("light_quality_profile_mismatch")
 
 
 def canonical_json(value: dict) -> str:

@@ -245,6 +245,8 @@ def validate_flash_manifest() -> dict[int, Path]:
         actual[address] = location
     if set(actual) != set(expected):
         raise FirmwareError("flash_manifest_must_preserve_nvs_and_queue")
+    if any(path.stat().st_size <= 0 for path in actual.values()):
+        raise FirmwareError("flash_manifest_image_empty")
     # The first two ranges must not erase or write neighboring NVS partitions.
     if actual[0x1000].stat().st_size > 0x7000 or actual[0x8000].stat().st_size > 0x1000:
         raise FirmwareError("flash_image_overlaps_private_partition")
@@ -264,15 +266,63 @@ def validate_port(value: str) -> str:
     return value
 
 
+def flash_arguments(port: str, env: dict[str, str], images: dict[int, Path]) -> list[str]:
+    # Only these validated byte ranges are written. Ignore extra flasher flags
+    # from build metadata, and never rebuild automatically while flashing.
+    return [
+        str(idf_python(env)),
+        "-m",
+        "esptool",
+        "--chip",
+        "esp32",
+        "--port",
+        port,
+        "--baud",
+        "115200",
+        "--before",
+        "default_reset",
+        "--after",
+        "hard_reset",
+        "write_flash",
+        "--flash_mode",
+        "dio",
+        "--flash_freq",
+        "40m",
+        "--flash_size",
+        "4MB",
+        *[part for offset, path in sorted(images.items()) for part in (hex(offset), str(path))],
+    ]
+
+
 def flash(port: str) -> None:
     validate_port(port)
     env = idf_environment()
     images = validate_flash_manifest()
-    # Only these explicit byte ranges are written. Do not invoke an automatic
-    # rebuild, user-supplied flasher flags, erase_flash, or erase-all here.
+    command(flash_arguments(port, env, images), env=env)
+    print("Firmware written; NVS configuration and offline queue were not erased.")
+
+
+def first_flash(port: str) -> None:
+    validate_port(port)
+    env = idf_environment()
+    images = validate_flash_manifest()
+    write_args = flash_arguments(port, env, images)
+    # Check everything offline before asking permission or opening the port.
+    # A pipe, redirected input, or an environment flag cannot authorize erasure.
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise FirmwareError("first_install_requires_interactive_terminal")
+    print(f"FIRST INSTALLATION ONLY — selected ESP32 device: {port}")
+    print("This will erase ALL factory firmware, configuration, and data on this device.")
+    print("Use ordinary flash for later upgrades to preserve configuration and queued data.")
+    try:
+        confirmation = input("Type FIRST-INSTALL exactly to erase and install: ")
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise FirmwareError("first_install_cancelled") from exc
+    if confirmation != "FIRST-INSTALL":
+        raise FirmwareError("first_install_cancelled")
     command(
         [
-            str(idf_python(env)),
+            write_args[0],
             "-m",
             "esptool",
             "--chip",
@@ -285,18 +335,23 @@ def flash(port: str) -> None:
             "default_reset",
             "--after",
             "hard_reset",
-            "write_flash",
-            "--flash_mode",
-            "dio",
-            "--flash_freq",
-            "40m",
-            "--flash_size",
-            "4MB",
-            *[part for offset, path in sorted(images.items()) for part in (hex(offset), str(path))],
+            "erase_flash",
         ],
         env=env,
     )
-    print("Firmware written; NVS configuration and offline queue were not erased.")
+    print("Device erase completed; all previous firmware, configuration, and data is now erased.")
+    try:
+        command(write_args, env=env)
+    except (FirmwareError, KeyboardInterrupt):
+        print(
+            "Firmware write did not complete after erasure. Previous data is already erased; "
+            "retry ordinary flash with the same --port, without another full-chip erase.",
+            file=sys.stderr,
+        )
+        raise
+    print(
+        "First installation complete; all previous device data was erased. Configure over USB next."
+    )
 
 
 def private_text(path: Path) -> str:
@@ -496,6 +551,78 @@ def serial_configure(
         raise FirmwareError("configuration_usb_failed") from exc
 
 
+def status_fields(response: object) -> dict[str, str | bool]:
+    if (
+        not isinstance(response, dict)
+        or response.get("status") != "ready"
+        or type(response.get("configured")) is not bool
+    ):
+        raise FirmwareError("device_status_invalid")
+    version = response.get("firmware_version", "unknown")
+    if not isinstance(version, str) or (
+        version != "unknown"
+        and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version) is None
+    ):
+        raise FirmwareError("device_status_invalid")
+    return {"status": "ready", "configured": response["configured"], "firmware_version": version}
+
+
+def status(port: str) -> None:
+    validate_port(port)
+    env = idf_environment()
+    raw = command(
+        [str(idf_python(env)), str(Path(__file__).resolve()), "_serial-status", "--port", port],
+        env=env,
+        capture=True,
+    )
+    try:
+        response = json.loads(raw)
+    except (ValueError, RecursionError) as exc:
+        raise FirmwareError("device_status_invalid") from exc
+    # Even worker output is revalidated and filtered, never echoed directly.
+    print(json.dumps(status_fields(response), separators=(",", ":")))
+
+
+def serial_status(port: str, *, serial_class=None, timeout=20.0) -> dict[str, str | bool]:
+    validate_port(port)
+    if serial_class is None:
+        try:
+            from serial import Serial
+        except ImportError as exc:
+            raise FirmwareError("sdk_pyserial_missing_run_setup") from exc
+        serial_class = Serial
+    wire = b'{"command":"status"}\n'
+    try:
+        port_handle = serial_class(port=None, baudrate=115200, timeout=0.2, write_timeout=3)
+        port_handle.dtr = False
+        port_handle.rts = False
+        port_handle.port = port
+        with port_handle:
+            time.sleep(2)
+            port_handle.reset_input_buffer()
+            if port_handle.write(wire) != len(wire):
+                raise FirmwareError("status_usb_write_incomplete")
+            port_handle.flush()
+            deadline = time.monotonic() + timeout
+            received = 0
+            while time.monotonic() < deadline:
+                line = port_handle.readline(2049)
+                received += len(line)
+                if received > 65536:
+                    raise FirmwareError("status_response_limit")
+                if not line or len(line) > 2048 or not line.endswith(b"\n"):
+                    continue
+                try:
+                    return status_fields(json.loads(line))
+                except (FirmwareError, ValueError, UnicodeError, RecursionError):
+                    continue
+            raise FirmwareError("status_response_timeout")
+    except FirmwareError:
+        raise
+    except Exception as exc:
+        raise FirmwareError("status_usb_failed") from exc
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="SleepScape firmware build and USB provisioning", allow_abbrev=False
@@ -510,6 +637,18 @@ def parser() -> argparse.ArgumentParser:
         "flash", help="Write firmware to the explicitly selected port; preserve NVS/queue"
     )
     flashing.add_argument("--port", required=True, help="Example: /dev/cu.usbserial-XXXX")
+    first_install = sub.add_parser(
+        "first-flash",
+        help="First installation only: interactively confirm full-chip erase, then write firmware",
+        allow_abbrev=False,
+    )
+    first_install.add_argument("--port", required=True, help="Example: /dev/cu.usbserial-XXXX")
+    inspection = sub.add_parser(
+        "status",
+        help="Read only firmware version and configuration state over USB",
+        allow_abbrev=False,
+    )
+    inspection.add_argument("--port", required=True)
     provisioning = sub.add_parser(
         "configure",
         help="Send Wi-Fi/server configuration over USB without echoing secrets",
@@ -529,11 +668,11 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    if values and values[0] == "_serial-configure":
+    if values and values[0] in {"_serial-configure", "_serial-status"}:
         internal = argparse.ArgumentParser()
         internal.add_argument("--port", required=True)
         args = internal.parse_args(values[1:])
-        args.action = "_serial-configure"
+        args.action = values[0]
     else:
         args = parser().parse_args(values)
     try:
@@ -545,6 +684,12 @@ def main(argv: list[str] | None = None) -> int:
             check()
         elif args.action == "flash":
             flash(args.port)
+        elif args.action == "first-flash":
+            first_flash(args.port)
+        elif args.action == "status":
+            status(args.port)
+        elif args.action == "_serial-status":
+            print(json.dumps(serial_status(args.port), separators=(",", ":")))
         elif args.action == "configure":
             configure(args.port, args.config_file, args.token_file)
         elif args.action == "_serial-configure":

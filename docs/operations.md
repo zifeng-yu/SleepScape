@@ -200,14 +200,37 @@ setup固定ESP-IDF v5.5.6提交及子模块，使用项目Python3.12对应的基
 build产生`firmware/build/sleepscape_environment.bin`并强制应用镜像≤1.8MiB。check运行C主机算法/队列测试以及强制的C→Python协议互通；缺SDK或互通依赖会失败，不能以跳过代替通过。
 CI的固件任务独立执行setup/build/check；普通Python/浏览器测试与它分开。源码和固定版本是交付基础，构建产物可清理后重建。
 
-到货后断电按图连接，USB数据线接电脑。先确认目标串口，例如macOS的`/dev/cu.usbserial-…`，把下面占位值换成实际端口：
+到货后先按[硬件方案的逐步接线](plans/hardware.md#接线步骤)核对C008-C、SEN0528、SEN0228及DFR0759：两块传感器接分线模块，分线模块接主控底部的3V3/GND/G21/G25，全程断电并按文字标签核对。完成后用USB-A→USB-C数据线连接主控；只有USB-C接口的Mac需先插支持数据传输的USB-C公→USB-A母转接头。不要把仅充电线当数据线。
+
+### 首次安装与后续升级
+
+先确认目标串口，例如macOS的`/dev/cu.usbserial-…`，把下面占位值换成实际端口。工具只操作明确选定的串口，不会自动选择其他USB设备。
+
+**刚购买的板卡第一次安装SleepScape**使用：
+
+```sh
+make firmware-first-flash PORT=/dev/cu.实际串口
+```
+
+工具先校验串口、SDK和构建镜像清单，再显示整片Flash清除提示。只有你在交互终端准确输入`FIRST-INSTALL`后，才清除板上的厂商预装固件、配置及全部数据，并写入启动程序、分区表和应用。默认115200波特率。此步骤为首次接入本项目准备干净的NVS和SPIFFS区域，避免出厂程序的存储布局影响初始化。尚未对实际新板执行，实物首装验收仍待完成。
+
+首次安装完成后运行只读状态检查，不需要打开串口终端手写协议：
+
+```sh
+make firmware-status PORT=/dev/cu.实际串口
+```
+
+预期为`status=ready`、`firmware_version=0.2.0`和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只发送状态查询，仅显示状态、固件版本及是否保存有效配置，不显示Wi-Fi或令牌。随后按后文完成USB配置、收到已写入NVS的确认；配置后重启应能初始化空白SPIFFS并进入采集，不能出现配置存储或队列挂载失败。这是到货首项软件验收，不以电脑构建成功代替。
+
+
+**已经使用SleepScape后的普通升级**改用：
 
 ```sh
 make firmware-flash PORT=/dev/cu.实际串口
 ```
 
-工具默认115200，仅写启动程序、分区表和应用，校验允许的三个地址，不整片擦除、不写NVS/离线队列。不会自动选择其他USB设备。
-串口找不到时先核对数据线和对应USB驱动；设备未进入下载模式时按原厂板卡说明操作，不通过擦除整片Flash试错。
+普通flash同样校验三个允许地址，只写启动程序、分区表和应用，保留NVS配置与离线队列，不整片擦除。不要把`first-flash`当作升级、换Wi-Fi或故障重试步骤；已有数据的板卡若需清除，必须另行确认数据保留/补传和清除目的。换Wi-Fi使用后文configure即可。
+串口找不到时先核对数据线和对应USB驱动；设备未进入下载模式时按原厂板卡说明操作，不通过清除Flash试错。
 
 ## 环境设备登记与HTTPS接收
 
@@ -231,12 +254,13 @@ chmod 600 .secrets/environment-profile.json
 ```
 
 编辑私有档案中的`placement_id`，用实际固定摆位的标识替换占位文字，例如`bedside-left-2026-11`。
-其他硬件、固件版本、处理方式和阈值字段必须与刷入程序匹配；没有校准就保留`uncalibrated`，不能为了通过校验虚填测量能力。
+其他硬件、固件版本、`i2c_bus`、`light_measurement`、声音处理方式和阈值字段必须与刷入程序匹配。SEN0228使用项目固定弱光档，不能只替换传感器名称却沿用其他光照档位；以当前`firmware/profile.example.json`和[数据契约](data-contract.md#当前光照测量配置)为准。没有校准就保留`uncalibrated`，不能为了通过校验虚填测量能力。
+若此前登记过其他传感器档案，不覆盖旧档案；使用新的profile_id登记本组合，再让设备配置指向它。旧记录与原档案继续保留作为观测证据。
 下面ID为示例，可保持一致使用，不能把自己的秘密填入命令参数：
 
 ```sh
 uv run --locked sleepscape environment-register \
-  --device-id bedroom-01 --profile-id bedroom-v1 \
+  --device-id bedroom-01 --profile-id bedroom-veml-01 \
   --profile-file .secrets/environment-profile.json \
   --token-file .secrets/environment-device.json
 uv run --locked sleepscape environment-status
@@ -272,7 +296,13 @@ uv run --locked python tools/firmware.py configure \
 显式填写的设备/配置ID必须与令牌JSON一致，否则拒绝。若不使用`--token-file`，完整配置JSON需包含全部六项。
 不用文件也可运行`make firmware-configure PORT=/dev/cu.实际串口`，手动填写ID、地址、Wi-Fi，令牌和密码均隐藏输入。
 
-配置成功只证明NVS写入。还需在服务器`environment-status`确认新增真实记录，并检查时钟锚点与各通道覆盖/故障；
+配置成功后再运行：
+
+```sh
+make firmware-status PORT=/dev/cu.实际串口
+```
+
+此时版本仍应为`0.2.0`，且`configured=true`。该布尔值只说明固件能读到有效的已保存配置，配置ACK只证明NVS写入；均不证明Wi-Fi连接、TLS或上传成功。还需在服务器`environment-status`确认新增真实记录，并检查时钟锚点与各通道覆盖/故障；
 当前环境曲线尚未接入看板，不能以Garmin页面能打开代替硬件端到端验收。
 确认后改接墙上电源、固定摆位。换Wi-Fi可再次USB配置，不必重刷程序。
 
@@ -289,7 +319,7 @@ chmod 600 .secrets/environment-profile-next.json
 
 ```sh
 uv run --locked sleepscape environment-profile \
-  --device-id bedroom-01 --profile-id bedroom-v2 \
+  --device-id bedroom-01 --profile-id bedroom-veml-02 \
   --profile-file .secrets/environment-profile-next.json
 ```
 
@@ -323,7 +353,8 @@ uv run --locked sleepscape environment-status
 | 首次空白存储 | 仅确认整个区域全空白才初始化文件系统；普通刷写保留已有数据 |
 | 文件系统损坏 | 不自动格式化、不整片擦除；启动时停止采集初始化并报告存储异常，保留现场后诊断 |
 | 拒收记录隔离区达到64KiB | 停止继续隔离/上传推进并保留数据，不因此停止其他采样任务；需检查存储状态后处理 |
-| 单通道缺失/异常 | 记录缺失、有效覆盖及质量，不用零值伪装成功；其余通道按真实状态继续 |
+| 单通道缺失/异常 | 记录缺失、有效覆盖及质量，不用零值伪装成功；其余通道按真实状态继续。I²C两传感器共线，整体总线故障可能同时影响温湿度与光照 |
+| 光照低光、暖机或饱和 | 按测量配置保留低光提示、暖机缺口或`out_of_range`；饱和不能当550 lx的真实观测，不自动换量程或修改校准 |
 | 看板没有环境曲线 | 当前仍待环境查询与UTC映射开发，不属于刷写成功后的自动展示承诺 |
 
 普通NVS不提供抗物理读取保证；任何流程都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。

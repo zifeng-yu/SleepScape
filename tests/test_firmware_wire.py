@@ -35,6 +35,12 @@ SCENARIOS = [
     "status",
     "maximal",
     "aggregate",
+    "light-low",
+    "light-saturated",
+    "light-bus-error",
+    "light-warming",
+    "light-recovered",
+    "light-legacy",
 ]
 
 
@@ -81,6 +87,7 @@ def native(tmp_path_factory):
             str(ROOT / "firmware/components/sc_core/sc_core.c"),
             str(ROOT / "firmware/components/sc_core/sc_record.c"),
             str(ROOT / "firmware/components/sc_core/sc_aggregate.c"),
+            str(ROOT / "firmware/components/sc_core/sc_veml7700.c"),
             str(ROOT / "firmware/main/sc_wire.c"),
             str(ROOT / "firmware/tests/wire_fixture.c"),
             str(dependency),
@@ -97,7 +104,7 @@ def native(tmp_path_factory):
 
 def run_native(native, command, scenario="full", payload=None):
     args = [str(native), command]
-    if command != "guards":
+    if command not in {"guards", "profile"}:
         args.append(scenario)
     return subprocess.run(args, input=payload, capture_output=True, text=True)
 
@@ -113,6 +120,16 @@ def web(tmp_path, monkeypatch):
     )
     settings = Settings(_env_file=None, data_dir=tmp_path / "data", environment_ingest_enabled=True)
     storage.register(settings.data_dir, "synthetic-device", "synthetic-profile", profile, TOKEN)
+    historical = profile.model_dump(mode="json")
+    historical.pop("light_measurement")
+    historical.pop("i2c_bus")
+    historical.update(light_sensor="m5stack-u136-bh1750", firmware_version="0.1.0")
+    storage.add_profile(
+        settings.data_dir,
+        "synthetic-device",
+        "historical-profile",
+        MeasurementProfile.model_validate(historical),
+    )
     with TestClient(create_app(settings), base_url="https://localhost") as client:
         yield client, settings
 
@@ -164,6 +181,32 @@ def test_native_binary_roundtrip_database_and_idempotent_ack(native, web, scenar
         assert len(events) == 2
         assert events[0]["continues_next"]
         assert events[1]["continued_from_previous"]
+    if scenario.startswith("light-"):
+        light = stored[0]["metrics"]["illuminance_lux"]
+        if scenario in {"light-saturated", "light-bus-error", "light-warming"}:
+            assert light["valid_count"] == 0 and light["mean"] is None
+            required = {
+                "light-saturated": "out_of_range",
+                "light-bus-error": "bus_error",
+                "light-warming": "warming",
+            }[scenario]
+            assert required in light["quality"]
+            if scenario == "light-warming":
+                assert "sensor_error" not in light["quality"]
+        elif scenario == "light-low":
+            assert light["valid_count"] == 60
+            assert light["mean"] == pytest.approx(0.0924)
+            assert "low_light_limit" in light["quality"]
+        elif scenario == "light-recovered":
+            assert light["valid_count"] == 58 and light["observed_count"] == 60
+            assert {"bus_error", "sensor_error", "warming", "partial_window"} <= set(
+                light["quality"]
+            )
+            assert light["mean"] == pytest.approx(0.1008)
+        elif scenario == "light-legacy":
+            assert stored[0]["measurement_profile_id"] == "historical-profile"
+            assert light["mean"] == pytest.approx(0.05)
+            assert "low_light_limit" not in light["quality"]
     if scenario == "anchor":
         assert batch.time_anchors[0].utc_at == "2026-01-01T00:00:00.123Z"
     if scenario == "status":
@@ -245,3 +288,29 @@ def test_native_requires_complete_exact_ack(native, web, mutation):
         encoded += " " * 65536
     checked = run_native(native, "ack", "event", encoded)
     assert checked.returncode == 1, checked.stderr
+
+
+def test_registered_profile_examples_match_compiled_sensor_configuration(native):
+    """Changing driver constants must invalidate stale operator registration examples."""
+    result = run_native(native, "profile")
+    assert result.returncode == 0, result.stderr
+    compiled = json.loads(result.stdout)
+    required = {"firmware_version", "light_sensor", "light_measurement", "i2c_bus"}
+    assert required <= compiled.keys()
+    for path in (
+        ROOT / "firmware/profile.example.json",
+        ROOT / "tests/fixtures/environment-profile.json",
+    ):
+        registered = MeasurementProfile.model_validate_json(path.read_bytes())
+        actual = registered.model_dump(mode="json")
+        for name, expected in compiled.items():
+            if isinstance(expected, dict):
+                assert actual[name].keys() == expected.keys()
+                for parameter, value in expected.items():
+                    found = actual[name][parameter]
+                    if isinstance(value, float):
+                        assert found == pytest.approx(value, rel=1e-12, abs=1e-12)
+                    else:
+                        assert found == value, f"{path.name}: {name}.{parameter} drift"
+            else:
+                assert actual[name] == expected, f"{path.name}: firmware {name} configuration drift"

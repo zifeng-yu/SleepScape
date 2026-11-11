@@ -1,4 +1,5 @@
 #include "sc_config.h"
+#include "sc_veml7700.h"
 #include <stdio.h>
 #include <string.h>
 #include "cJSON.h"
@@ -83,8 +84,8 @@ static void process_line(const char *line) {
         sc_config_t config;
         bool configured = sc_config_load(&config);
         memset(&config, 0, sizeof(config));
-        puts(configured ? "{\"status\":\"ready\",\"configured\":true}" :
-                          "{\"status\":\"ready\",\"configured\":false}");
+        printf("{\"status\":\"ready\",\"configured\":%s,\"firmware_version\":\"%s\"}\n",
+               configured ? "true" : "false", SC_FIRMWARE_VERSION);
         cJSON_Delete(json); return;
     }
     sc_config_t config = {0};

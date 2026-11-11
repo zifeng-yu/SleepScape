@@ -522,3 +522,157 @@ def test_quarantine_count_is_preserved_and_cannot_be_negative(settings, payload)
             0
         ]
     assert json.loads(value)["quarantined_count"] == 3
+
+
+def test_current_veml_profile_requires_complete_finite_consistent_metadata(profile):
+    values = profile.model_dump(mode="json")
+    assert values["light_sensor"] == "dfrobot-sen0228-veml7700"
+    for name in ("light_measurement", "i2c_bus"):
+        incomplete = copy.deepcopy(values)
+        incomplete.pop(name)
+        with pytest.raises(ValidationError):
+            MeasurementProfile.model_validate(incomplete)
+    for section, name, value in (
+        ("light_measurement", "gain", True),
+        ("light_measurement", "resolution_lux", float("nan")),
+        ("light_measurement", "resolution_lux", float("inf")),
+        ("light_measurement", "range_max_lux", 550.494),
+        ("light_measurement", "auto_range", 0),
+        ("light_measurement", "auto_range", True),
+        ("light_measurement", "low_light_limit_lux", 600),
+        ("i2c_bus", "light_address", 0x23),
+        ("i2c_bus", "temperature_address", 0x10),
+        ("i2c_bus", "scl_gpio", 21),
+        ("i2c_bus", "supply_voltage_v", float("inf")),
+    ):
+        changed = copy.deepcopy(values)
+        changed[section][name] = value
+        with pytest.raises(ValidationError):
+            MeasurementProfile.model_validate(changed)
+
+
+def test_sensor_profile_change_requires_new_id_and_preserves_old_hash(settings, profile, payload):
+    values = profile.model_dump(mode="json")
+    values.pop("light_measurement")
+    values.pop("i2c_bus")
+    values.update(light_sensor="m5stack-u136-bh1750", firmware_version="0.1.0")
+    historical = MeasurementProfile.model_validate(values)
+    storage.add_profile(settings.data_dir, "synthetic-device", "historical-profile", historical)
+    with sqlite3.connect(settings.data_dir / "sleepscape.sqlite3") as connection:
+        original = connection.execute(
+            "SELECT payload_json,content_hash FROM environment_profiles WHERE profile_id=?",
+            ("historical-profile",),
+        ).fetchone()
+    assert "light_measurement" not in json.loads(original[0])
+    assert "i2c_bus" not in json.loads(original[0])
+    # Re-reading and re-registering an existing immutable profile must not add null fields.
+    loaded = MeasurementProfile.model_validate_json(original[0])
+    storage.add_profile(settings.data_dir, "synthetic-device", "historical-profile", loaded)
+    with pytest.raises(storage.EnvironmentError, match="profile_conflict"):
+        storage.add_profile(settings.data_dir, "synthetic-device", "historical-profile", profile)
+    with sqlite3.connect(settings.data_dir / "sleepscape.sqlite3") as connection:
+        preserved = connection.execute(
+            "SELECT payload_json,content_hash FROM environment_profiles WHERE profile_id=?",
+            ("historical-profile",),
+        ).fetchone()
+    assert preserved == original
+    # A historical low-light flag uses its historical measurement convention.
+    payload["records"][0]["measurement_profile_id"] = "historical-profile"
+    light = payload["records"][0]["metrics"]["illuminance_lux"]
+    light.update(mean=0.5, min=0.5, max=0.5, quality=["low_light_limit"])
+    with browser(settings) as web:
+        assert web.post(INGEST_PATH, json=payload, headers=headers()).status_code == 200
+    snapshot = create_backup(settings)
+    check_restore(settings, Path(snapshot["backup_path"]))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_illuminance_never_becomes_zero(payload, value):
+    payload["records"][0]["metrics"]["illuminance_lux"].update(mean=value, min=value, max=value)
+    with pytest.raises(ValidationError):
+        EnvironmentBatch.model_validate(payload)
+
+
+def test_veml_profile_bounds_and_low_light_flags_are_checked_before_any_commit(settings, payload):
+    light = payload["records"][0]["metrics"]["illuminance_lux"]
+    with browser(settings) as web:
+        light.update(mean=550.494, min=550.494, max=550.494, quality=[])
+        rejected = web.post(INGEST_PATH, json=payload, headers=headers())
+        assert rejected.status_code == 422
+        assert rejected.json()["error"] == "illuminance_outside_measurement_profile"
+        assert counts(settings)["environment_records"] == 0
+        assert counts(settings)["environment_time_anchors"] == 0
+        light.update(mean=0.5, min=0.5, max=0.5, quality=["low_light_limit"])
+        rejected = web.post(INGEST_PATH, json=payload, headers=headers())
+        assert rejected.status_code == 422
+        assert rejected.json()["error"] == "light_quality_profile_mismatch"
+        light["quality"] = []
+        assert web.post(INGEST_PATH, json=payload, headers=headers()).status_code == 200
+
+
+def test_veml_last_valid_count_and_low_light_threshold_remain_valid(settings, payload):
+    with browser(settings) as web:
+        for seq, level, flags in (
+            (0, 550.485595703125, []),  # Actual float32 round-trip at raw 65534.
+            (1, 0.1008, []),
+            (2, 0.0924, ["low_light_limit"]),
+            (3, 0.0, ["low_light_limit"]),
+        ):
+            changed = copy.deepcopy(payload)
+            changed["records"][0]["seq"] = seq
+            changed["records"][0]["metrics"]["illuminance_lux"].update(
+                mean=level, min=level, max=level, quality=flags
+            )
+            assert web.post(INGEST_PATH, json=changed, headers=headers()).status_code == 200
+
+
+def test_saturated_illuminance_remains_invalid_null_not_darkness(settings, payload):
+    light = payload["records"][0]["metrics"]["illuminance_lux"]
+    light.update(
+        state="invalid", valid_count=0, mean=None, min=None, max=None, quality=["out_of_range"]
+    )
+    with browser(settings) as web:
+        assert web.post(INGEST_PATH, json=payload, headers=headers()).status_code == 200
+    stored = json.loads(record_rows(settings)[0][-1])["metrics"]["illuminance_lux"]
+    assert stored["mean"] is None
+    assert stored["valid_count"] == 0 and stored["observed_count"] == 60
+    assert stored["state"] == "invalid" and stored["quality"] == ["out_of_range"]
+    light.update(mean=0.0, min=0.0, max=0.0)
+    with pytest.raises(ValidationError):
+        EnvironmentBatch.model_validate(payload)
+
+
+def test_known_firmware_profile_rejects_self_consistent_but_wrong_driver_parameters(profile):
+    values = profile.model_dump(mode="json")
+    values["light_measurement"].update(
+        gain=1.0, resolution_lux=0.0168, range_max_lux=1100.9712, als_conf=0x0080
+    )
+    with pytest.raises(ValidationError, match="known_firmware_sensor_configuration_mismatch"):
+        MeasurementProfile.model_validate(values)
+    # An intentionally new firmware version can describe a different fixed-gain configuration.
+    values["firmware_version"] = "future-synthetic"
+    changed = MeasurementProfile.model_validate(values)
+    assert changed.light_measurement.gain == 1.0
+
+
+@pytest.mark.parametrize(
+    ("section", "name", "value"),
+    [
+        ("light_measurement", "integration_ms", 800),
+        ("light_measurement", "als_conf", 0),
+        ("light_measurement", "power_saving_enabled", True),
+        ("light_measurement", "low_light_limit_lux", 1.0),
+        ("light_measurement", "reference", "different-conversion-reference"),
+        ("i2c_bus", "frequency_hz", 400000),
+        ("i2c_bus", "supply_voltage_v", 5.0),
+        ("i2c_bus", "sda_gpio", 26),
+        ("i2c_bus", "hub_model", "other-hub"),
+    ],
+)
+def test_known_firmware_registration_cannot_claim_different_sensor_settings(
+    profile, section, name, value
+):
+    values = profile.model_dump(mode="json")
+    values[section][name] = value
+    with pytest.raises(ValidationError, match="known_firmware_sensor_configuration_mismatch"):
+        MeasurementProfile.model_validate(values)

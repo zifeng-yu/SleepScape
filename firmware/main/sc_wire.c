@@ -39,19 +39,20 @@ static cJSON *array(writer_t *w, cJSON *parent, const char *key) {
 static void item(writer_t *w, cJSON *array, cJSON *value) {
     if (!value || !cJSON_AddItemToArray(array, value)) { cJSON_Delete(value); w->ok = false; }
 }
-static void quality(writer_t *w, cJSON *o, uint32_t flags, bool low_light, bool truncated) {
+static void quality(writer_t *w, cJSON *o, uint32_t flags, bool truncated) {
     const struct { uint32_t flag; const char *name; } names[] = {
         {SC_Q_MISSING, "missing"}, {SC_Q_PARTIAL, "partial_window"},
         {SC_Q_INVALID, "sensor_error"}, {SC_Q_DMA_OVERFLOW, "dma_overflow"},
         {SC_Q_CLIPPED, "clipped"}, {SC_Q_NUMERIC_FLOOR, "below_numeric_floor"},
         {SC_Q_WARMING, "warming"}, {SC_Q_INTERRUPTED, "audio_gap"},
-        {SC_Q_MERGED, "merged"}, {SC_Q_INCOMPLETE, "incomplete"}
+        {SC_Q_MERGED, "merged"}, {SC_Q_INCOMPLETE, "incomplete"},
+        {SC_Q_LOW_LIGHT, "low_light_limit"}, {SC_Q_OUT_OF_RANGE, "out_of_range"},
+        {SC_Q_BUS_ERROR, "bus_error"}
     };
     cJSON *a = array(w, o, "quality");
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (flags & names[i].flag) item(w, a, cJSON_CreateString(names[i].name));
-    if (flags & ~((1u << 10) - 1)) w->ok = false;
-    if (low_light) item(w, a, cJSON_CreateString("low_light_limit"));
+    if (flags & ~((1u << 13) - 1)) w->ok = false;
     if (truncated) item(w, a, cJSON_CreateString("ranges_truncated"));
 }
 static const char *state(uint32_t expected, uint32_t observed, uint32_t valid) {
@@ -71,14 +72,15 @@ static void scalar(writer_t *w, cJSON *metrics, const char *name,
     nullable(w, o, "mean", sc_scalar_mean(s));
     nullable(w, o, "min", s->valid_count ? s->min : NAN);
     nullable(w, o, "max", s->valid_count ? s->max : NAN);
-    quality(w, o, s->quality, !strcmp(unit, "lx") && s->valid_count && s->min < 1, false);
+    /* Sampling-time quality survives replay under a different hardware profile. */
+    quality(w, o, s->quality, false);
 }
 static void base(writer_t *w, cJSON *o, const sc_source_t *s, const char *kind,
                  uint64_t seq, uint64_t start, uint64_t end, uint32_t flags) {
     str(w, o, "record_type", kind); num(w, o, "seq", seq);
     str(w, o, "measurement_profile_id", s->measurement_profile_id);
     num(w, o, "mono_start_ms", start); num(w, o, "mono_end_ms", end);
-    quality(w, o, flags, false, false);
+    quality(w, o, flags, false);
 }
 static cJSON *minute(writer_t *w, const sc_queue_item_t *row) {
     sc_minute_t m;
@@ -114,7 +116,7 @@ static cJSON *minute(writer_t *w, const sc_queue_item_t *row) {
     uint32_t flags = m.sound_quality;
     if (!known) flags |= m.detector_state == SC_DETECTOR_INTERRUPTED ? SC_Q_INTERRUPTED : SC_Q_WARMING;
     if (m.sound_valid_count && m.sound_energy_sum == 0) flags |= SC_Q_NUMERIC_FLOOR;
-    quality(w, s, flags, false, false);
+    quality(w, s, flags, false);
     return o;
 }
 static cJSON *event(writer_t *w, const sc_queue_item_t *row) {
@@ -150,7 +152,7 @@ static cJSON *anchor(writer_t *w, const sc_queue_item_t *row) {
     str(w, o, "anchor_id", id); num(w, o, "monotonic_ms", a.monotonic_ms);
     str(w, o, "utc_at", stamp); str(w, o, "source", "ntp");
     nullable(w, o, "uncertainty_ms", a.uncertainty_ms == UINT32_MAX ? NAN : (double)a.uncertainty_ms);
-    quality(w, o, a.quality, false, false);
+    quality(w, o, a.quality, false);
     return o;
 }
 static cJSON *status(writer_t *w, const sc_queue_item_t *row) {
@@ -166,7 +168,7 @@ static cJSON *status(writer_t *w, const sc_queue_item_t *row) {
     array(w, o, "lost_ranges");
     bool truncated = s.dropped_minutes || s.dropped_events || s.dropped_anchors || s.corrupt_records;
     boolean(w, o, "ranges_truncated", truncated);
-    quality(w, o, 0, false, truncated);
+    quality(w, o, 0, truncated);
     return o;
 }
 static bool identifier(const char *s, size_t capacity) {

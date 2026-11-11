@@ -12,6 +12,7 @@ from sleepscape.domain.environment import (
     MeasurementProfile,
     canonical_json,
     content_hash,
+    validate_light_profile,
 )
 
 ENVIRONMENT_TABLES = (
@@ -168,7 +169,7 @@ def register(
             "INSERT INTO environment_devices VALUES (?, ?, 1, ?, ?)",
             (device_id, hashlib.sha256(token.encode()).hexdigest(), now, now),
         )
-        payload = profile.model_dump(mode="json")
+        payload = profile.model_dump(mode="json", exclude_none=True)
         connection.execute(
             "INSERT INTO environment_profiles VALUES (?, ?, ?, ?, ?)",
             (device_id, profile_id, canonical_json(payload), content_hash(payload), now),
@@ -184,7 +185,7 @@ def add_profile(
             "SELECT 1 FROM environment_devices WHERE device_id=?", (device_id,)
         ).fetchone():
             raise EnvironmentError("device_not_registered", 404)
-        payload = profile.model_dump(mode="json")
+        payload = profile.model_dump(mode="json", exclude_none=True)
         existing = connection.execute(
             "SELECT content_hash FROM environment_profiles WHERE device_id=? AND profile_id=?",
             (device_id, profile_id),
@@ -278,6 +279,10 @@ def ingest(data_dir: Path, device_id: str, batch: EnvironmentBatch) -> dict:
                     profiles[record.measurement_profile_id] = (
                         MeasurementProfile.model_validate_json(row[0])
                     )
+                try:
+                    validate_light_profile(record, profiles[record.measurement_profile_id])
+                except ValueError as exc:
+                    raise EnvironmentError(str(exc), 422) from None
                 if (
                     record.record_type == "event"
                     and record.threshold_profile_id

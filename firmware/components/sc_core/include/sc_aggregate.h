@@ -22,7 +22,7 @@ void sc_aggregate_init(sc_aggregate_t *aggregate, uint64_t start_ms,
                        sc_minute_emit_fn emit, void *context);
 /* Slots are one-second start times, aligned to boot monotonic second boundaries. */
 bool sc_aggregate_sensor(sc_aggregate_t *aggregate, uint64_t slot_ms,
-                         bool light_valid, float lux, bool aht_attempt,
+                         bool light_valid, float lux, uint32_t light_quality, bool aht_attempt,
                          bool aht_valid, float temperature_c, float humidity_pct);
 /* Skipped seconds become missing, never zeros. Duplicate/late slots return false. */
 bool sc_aggregate_audio(sc_aggregate_t *aggregate, uint64_t slot_ms,

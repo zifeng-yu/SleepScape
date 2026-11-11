@@ -28,7 +28,8 @@ typedef struct {
     uint64_t slot_ms;
     union {
         sc_audio_second_t sound;
-        struct { bool light_ok, aht_attempt, aht_ok; float lux, temperature, humidity; } sensor;
+        struct { bool light_ok, aht_attempt, aht_ok; float lux, temperature, humidity;
+                 uint32_t light_quality; } sensor;
         int64_t utc_ms;
     } value;
 } observation_t;
@@ -119,6 +120,7 @@ static void collect_task(void *unused) {
         } else {
             sc_aggregate_sensor(&aggregate, message.slot_ms,
                 message.value.sensor.light_ok, message.value.sensor.lux,
+                message.value.sensor.light_quality,
                 message.value.sensor.aht_attempt, message.value.sensor.aht_ok,
                 message.value.sensor.temperature, message.value.sensor.humidity);
         }
@@ -132,7 +134,8 @@ static void sensor_task(void *unused) {
         if (slot == previous) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
         previous = slot;
         observation_t message = {.type = MSG_SENSOR, .slot_ms = slot};
-        message.value.sensor.light_ok = sc_board_light(&message.value.sensor.lux);
+        message.value.sensor.light_ok = sc_board_light(&message.value.sensor.lux,
+                                                       &message.value.sensor.light_quality);
         message.value.sensor.aht_attempt = slot % 10000 == 0;
         if (message.value.sensor.aht_attempt)
             message.value.sensor.aht_ok = sc_board_temperature(

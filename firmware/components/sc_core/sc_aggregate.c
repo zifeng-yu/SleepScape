@@ -26,7 +26,7 @@ void sc_aggregate_init(sc_aggregate_t *a, uint64_t start,
 }
 
 bool sc_aggregate_sensor(sc_aggregate_t *a, uint64_t timestamp,
-                         bool light_valid, float lux, bool aht_attempt,
+                         bool light_valid, float lux, uint32_t light_quality, bool aht_attempt,
                          bool aht_valid, float temperature, float humidity) {
     if (!a || timestamp % 1000) return false;
     uint64_t start = timestamp / SC_WINDOW_MS * SC_WINDOW_MS;
@@ -39,8 +39,15 @@ bool sc_aggregate_sensor(sc_aggregate_t *a, uint64_t timestamp,
     bool accepted = false;
     if (!(slot->light_slots & light_bit)) {
         slot->light_slots |= light_bit; accepted = true;
-        sc_scalar_add(&slot->minute.light, true,
+        sc_scalar_t *light = &slot->minute.light;
+        uint32_t prior = light->quality;
+        sc_scalar_add(light, true,
                       light_valid && isfinite(lux) && lux >= 0 && lux <= 200000, lux);
+        /* Settling is an observed attempt, not a sensor malfunction. Preserve
+         * earlier real failures if this minute also contains a later warm-up. */
+        if (!light_valid && light_quality == SC_Q_WARMING)
+            light->quality = (light->quality & ~SC_Q_INVALID) | (prior & SC_Q_INVALID);
+        light->quality |= light_quality;
     }
     unsigned aht_index = second / 10;
     uint8_t aht_bit = (uint8_t)(1u << aht_index);

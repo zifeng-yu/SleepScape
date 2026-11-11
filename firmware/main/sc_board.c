@@ -1,5 +1,7 @@
 #include "sc_board.h"
 #include <string.h>
+#include <math.h>
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_pdm.h"
@@ -11,7 +13,7 @@
 static i2c_master_dev_handle_t aht, light;
 static i2s_chan_handle_t microphone;
 static volatile uint32_t overflows;
-static bool light_ready;
+static sc_veml_t light_sensor;
 
 static bool IRAM_ATTR audio_overflow(i2s_chan_handle_t handle,
                                     i2s_event_data_t *event, void *context) {
@@ -20,21 +22,23 @@ static bool IRAM_ATTR audio_overflow(i2s_chan_handle_t handle,
     return false;
 }
 
-static esp_err_t i2c_device(int port, int sda, int scl, uint16_t address,
-                            i2c_master_dev_handle_t *device) {
+static esp_err_t sensor_bus_init(void) {
     i2c_master_bus_handle_t bus;
     i2c_master_bus_config_t bus_config = {
-        .i2c_port = port, .sda_io_num = sda, .scl_io_num = scl,
+        .i2c_port = 0, .sda_io_num = SC_SENSOR_SDA, .scl_io_num = SC_SENSOR_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = false,
     };
     esp_err_t result = i2c_new_master_bus(&bus_config, &bus);
     if (result != ESP_OK) return result;
     i2c_device_config_t config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = address,
-        .scl_speed_hz = 100000,
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = SC_AHT_ADDRESS,
+        .scl_speed_hz = SC_SENSOR_I2C_HZ,
     };
-    return i2c_master_bus_add_device(bus, &config, device);
+    result = i2c_master_bus_add_device(bus, &config, &aht);
+    config.device_address = SC_VEML_ADDRESS;
+    esp_err_t light_result = i2c_master_bus_add_device(bus, &config, &light);
+    return result != ESP_OK ? result : light_result;
 }
 
 static void quiet_outputs(void) {
@@ -75,10 +79,10 @@ static void quiet_outputs(void) {
 
 esp_err_t sc_board_init(void) {
     quiet_outputs();
-    esp_err_t result = i2c_device(0, SC_LIGHT_SDA, SC_LIGHT_SCL, 0x23, &light);
-    if (result != ESP_OK) return result;
-    result = i2c_device(1, SC_AHT_SDA, SC_AHT_SCL, 0x38, &aht);
-    if (result != ESP_OK) return result;
+    sc_veml_reset(&light_sensor);
+    esp_err_t bus_result = sensor_bus_init();
+    /* I2C failures do not prevent independent microphone initialization. */
+    esp_err_t result;
     i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     channel.dma_desc_num = 12;
     channel.dma_frame_num = 256;
@@ -98,7 +102,8 @@ esp_err_t sc_board_init(void) {
     i2s_event_callbacks_t callbacks = {.on_recv_q_ovf = audio_overflow};
     result = i2s_channel_register_event_callback(microphone, &callbacks, NULL);
     if (result != ESP_OK) return result;
-    return i2s_channel_enable(microphone);
+    result = i2s_channel_enable(microphone);
+    return result != ESP_OK ? result : bus_result;
 }
 
 static uint8_t aht_crc(const uint8_t *bytes, size_t count) {
@@ -137,23 +142,26 @@ bool sc_board_temperature(float *temperature, float *humidity) {
     return *humidity >= 0 && *humidity <= 100 && *temperature >= -40 && *temperature <= 85;
 }
 
-bool sc_board_light(float *lux) {
-    if (!light) return false;
-    if (!light_ready) {
-        const uint8_t power = 0x01, mode = 0x11;
-        if (i2c_master_transmit(light, &power, 1, 50) != ESP_OK ||
-            i2c_master_transmit(light, &mode, 1, 50) != ESP_OK) return false;
-        light_ready = true;
-        vTaskDelay(pdMS_TO_TICKS(180));
-    }
-    uint8_t bytes[2];
-    if (i2c_master_receive(light, bytes, 2, 50) != ESP_OK) {
-        light_ready = false; return false;
-    }
-    uint16_t raw = ((uint16_t)bytes[0] << 8) | bytes[1];
-    if (raw == UINT16_MAX) return false; /* Saturation is not a valid maximum. */
-    *lux = (float)raw / 2.4f; /* Continuous high-resolution mode 2, MTreg=69. */
-    return true;
+static bool light_read(void *context, uint8_t reg, uint8_t bytes[2]) {
+    (void)context;
+    return light && i2c_master_transmit_receive(light, &reg, 1, bytes, 2, 50) == ESP_OK;
+}
+static bool light_write(void *context, uint8_t reg, const uint8_t bytes[2]) {
+    (void)context;
+    const uint8_t command[] = {reg, bytes[0], bytes[1]};
+    return light && i2c_master_transmit(light, command, sizeof(command), 50) == ESP_OK;
+}
+static uint64_t light_now(void *context) {
+    (void)context;
+    return (uint64_t)esp_timer_get_time() / 1000;
+}
+bool sc_board_light(float *lux, uint32_t *quality) {
+    const sc_veml_io_t io = {.read_word = light_read, .write_word = light_write,
+                            .now_ms = light_now};
+    sc_veml_sample_t sample;
+    bool valid = sc_veml_poll(&light_sensor, &io, &sample);
+    *lux = sample.lux; *quality = sample.quality;
+    return valid;
 }
 
 esp_err_t sc_board_audio_read(int16_t *samples, size_t capacity, size_t *count) {

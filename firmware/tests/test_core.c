@@ -178,7 +178,7 @@ static void test_aggregate_delays_and_preserves_sensor_channels(void) {
     sc_aggregate_t a; collected_t out = {0}; sc_aggregate_init(&a, 0, collect, &out);
     sc_audio_second_t s = level(-50);
     for (unsigned i = 0; i < 63; ++i) {
-        assert(sc_aggregate_sensor(&a, i * 1000, true, (float)i, i % 10 == 0,
+        assert(sc_aggregate_sensor(&a, i * 1000, true, (float)i, 0, i % 10 == 0,
                                    true, 20 + (float)i / 10, 50));
         assert(sc_aggregate_audio(&a, i * 1000, &s));
         assert(out.count == (i >= 62 ? 1u : 0u));
@@ -197,8 +197,8 @@ static void test_aggregate_startup_gap_duplicates_and_late_data(void) {
     sc_aggregate_t a; collected_t out = {0}; sc_aggregate_init(&a, 5200, collect, &out);
     sc_audio_second_t s = level(-50);
     for (unsigned i = 6; i < 63; ++i) {
-        assert(sc_aggregate_sensor(&a, i * 1000, true, 0, i % 10 == 0, true, 20, 50));
-        assert(!sc_aggregate_sensor(&a, i * 1000, true, 999, i % 10 == 0, true, 99, 99));
+        assert(sc_aggregate_sensor(&a, i * 1000, true, 0, 0, i % 10 == 0, true, 20, 50));
+        assert(!sc_aggregate_sensor(&a, i * 1000, true, 999, 0, i % 10 == 0, true, 99, 99));
         assert(sc_aggregate_audio(&a, i * 1000, &s));
         assert(!sc_aggregate_audio(&a, i * 1000, &s));
     }
@@ -208,7 +208,7 @@ static void test_aggregate_startup_gap_duplicates_and_late_data(void) {
     assert(m->temperature.valid_count == 5);
     assert(sc_scalar_mean(&m->light) == 0 && sc_scalar_mean(&m->temperature) == 20);
     assert((m->sound_quality & SC_Q_MISSING) && (m->light.quality & SC_Q_MISSING));
-    assert(!sc_aggregate_sensor(&a, 59000, true, 10, true, true, 20, 50));
+    assert(!sc_aggregate_sensor(&a, 59000, true, 10, 0, true, true, 20, 50));
     assert(!sc_aggregate_audio(&a, 59000, &s));
     assert(!sc_aggregate_audio(&a, 63001, &s));
 }
@@ -284,7 +284,7 @@ static void test_aggregate_independent_sensor_failure(void) {
     sc_aggregate_t a; collected_t out = {0}; sc_aggregate_init(&a, 0, collect, &out);
     sc_audio_second_t s = level(-50);
     for (unsigned i = 0; i < 63; ++i) {
-        assert(sc_aggregate_sensor(&a, i * 1000, i != 4, i == 5 ? NAN : 0,
+        assert(sc_aggregate_sensor(&a, i * 1000, i != 4, i == 5 ? NAN : 0, 0,
                                    i % 10 == 0, i != 20, 21, i == 10 ? 101 : 50));
         assert(sc_aggregate_audio(&a, i * 1000, &s));
     }

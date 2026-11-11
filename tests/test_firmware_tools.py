@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -129,6 +131,201 @@ def test_flash_only_writes_explicit_safe_ranges(build_files, monkeypatch):
     assert kwargs == {"env": env}
 
 
+@pytest.fixture
+def first_install(build_files, monkeypatch):
+    class TerminalStreams:
+        stdin = SimpleNamespace(isatty=lambda: True)
+        stdout = SimpleNamespace(isatty=lambda: True)
+
+        @property
+        def stderr(self):
+            return sys.stderr
+
+    calls = []
+    env = {"SDK": "test"}
+    monkeypatch.setattr(fw, "idf_environment", lambda: env)
+    monkeypatch.setattr(fw, "idf_python", lambda value: Path("/sdk/python"))
+    monkeypatch.setattr(fw, "command", lambda args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(fw, "sys", TerminalStreams())
+    return calls, env
+
+
+def test_first_install_requires_confirmation_before_erase_then_safe_write(
+    first_install, monkeypatch, capsys
+):
+    calls, env = first_install
+
+    def confirm(prompt):
+        assert calls == []
+        assert "FIRST-INSTALL" in prompt
+        warning = capsys.readouterr().out
+        assert "/dev/cu.usbserial-example" in warning
+        assert "ALL factory firmware, configuration, and data" in warning
+        return "FIRST-INSTALL"
+
+    monkeypatch.setattr("builtins.input", confirm)
+    assert fw.main(["first-flash", "--port", "/dev/cu.usbserial-example"]) == 0
+    assert len(calls) == 2
+    erase, write = [args for args, _ in calls]
+    for args, kwargs in calls:
+        assert args[:5] == ["/sdk/python", "-m", "esptool", "--chip", "esp32"]
+        assert args[args.index("--port") + 1] == "/dev/cu.usbserial-example"
+        assert kwargs == {"env": env}
+    assert erase[-1] == "erase_flash"
+    assert "write_flash" in write
+    assert write[-6::2] == ["0x1000", "0x8000", "0x10000"]
+    assert not any("erase" in arg for arg in write)
+    output = capsys.readouterr().out
+    assert "previous device data was erased" in output
+    assert "were not erased" not in output
+
+
+@pytest.mark.parametrize("answer", ["", "yes", "first-install", "FIRST-INSTALL "])
+def test_first_install_cancel_never_accesses_device(first_install, monkeypatch, answer):
+    calls, _ = first_install
+    monkeypatch.setattr("builtins.input", lambda prompt: answer)
+    with pytest.raises(fw.FirmwareError, match="first_install_cancelled"):
+        fw.first_flash("/dev/cu.usbserial-example")
+    assert calls == []
+
+
+@pytest.mark.parametrize("interruption", [EOFError, KeyboardInterrupt])
+def test_first_install_interrupted_confirmation_never_accesses_device(
+    first_install, monkeypatch, interruption, capsys
+):
+    calls, _ = first_install
+
+    def interrupt(prompt):
+        raise interruption
+
+    monkeypatch.setattr("builtins.input", interrupt)
+    assert fw.main(["first-flash", "--port", "/dev/cu.usbserial-example"]) == 1
+    assert calls == []
+    assert "first_install_cancelled" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stream", ["stdin", "stdout"])
+def test_first_install_noninteractive_never_prompts_or_accesses_device(
+    first_install, monkeypatch, stream
+):
+    calls, _ = first_install
+    monkeypatch.setattr(getattr(fw.sys, stream), "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("Must not prompt"))
+    with pytest.raises(fw.FirmwareError, match="first_install_requires_interactive_terminal"):
+        fw.first_flash("/dev/cu.usbserial-example")
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("invalid", "error"),
+    [
+        ("missing_manifest", "flash_manifest_missing_or_invalid"),
+        ("invalid_manifest", "flash_manifest_missing_or_invalid"),
+        ("private_range", "flash_manifest_must_preserve_nvs_and_queue"),
+        ("missing_image", "flash_manifest_image_missing"),
+        ("empty_bootloader", "flash_manifest_image_empty"),
+        ("empty_partition", "flash_manifest_image_empty"),
+        ("empty_application", "flash_manifest_image_empty"),
+        ("oversize_bootloader", "flash_image_overlaps_private_partition"),
+        ("oversize_partition", "flash_image_overlaps_private_partition"),
+        ("oversize_application", "firmware_exceeds_1_8_mib_budget"),
+    ],
+)
+def test_first_install_validates_build_before_confirmation_or_erase(
+    first_install, build_files, monkeypatch, invalid, error
+):
+    calls, _ = first_install
+    directory, files = build_files
+    manifest = directory / "flasher_args.json"
+    if invalid == "missing_manifest":
+        manifest.unlink()
+    elif invalid == "invalid_manifest":
+        manifest.write_text("not json")
+    elif invalid == "private_range":
+        files["0x210000"] = files.pop("0x10000")
+        manifest.write_text(json.dumps({"flash_files": files}))
+    elif invalid == "missing_image":
+        (directory / files["0x10000"]).unlink()
+    else:
+        image, limit = {
+            "bootloader": (files["0x1000"], 0x7000),
+            "partition": (files["0x8000"], 0x1000),
+            "application": (files["0x10000"], fw.MAX_APP_BYTES),
+        }[invalid.split("_", 1)[1]]
+        with (directory / image).open("wb") as stream:
+            stream.truncate(0 if invalid.startswith("empty_") else limit + 1)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("Must not prompt"))
+    with pytest.raises(fw.FirmwareError, match=error):
+        fw.first_flash("/dev/cu.usbserial-example")
+    assert calls == []
+
+
+@pytest.mark.parametrize("dependency", ["idf_environment", "idf_python"])
+def test_first_install_requires_usable_sdk_before_confirmation_or_erase(
+    first_install, monkeypatch, dependency
+):
+    calls, _ = first_install
+
+    def unavailable(*args):
+        raise fw.FirmwareError("sdk_unavailable")
+
+    monkeypatch.setattr(fw, dependency, unavailable)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("Must not prompt"))
+    with pytest.raises(fw.FirmwareError, match="sdk_unavailable"):
+        fw.first_flash("/dev/cu.usbserial-example")
+    assert calls == []
+
+
+def test_first_install_erase_failure_stops_before_write(first_install, monkeypatch, capsys):
+    calls, _ = first_install
+    monkeypatch.setattr("builtins.input", lambda prompt: "FIRST-INSTALL")
+
+    def erase_failure(args, **kwargs):
+        calls.append((args, kwargs))
+        raise fw.FirmwareError("command_failed")
+
+    monkeypatch.setattr(fw, "command", erase_failure)
+    assert fw.main(["first-flash", "--port", "/dev/cu.usbserial-example"]) == 1
+    assert len(calls) == 1
+    assert calls[0][0][-1] == "erase_flash"
+    output = capsys.readouterr()
+    assert "command_failed" in output.err
+    assert "First installation complete" not in output.out
+
+
+def test_first_install_write_failure_discloses_erase_and_normal_flash_retry(
+    first_install, monkeypatch, capsys
+):
+    calls, _ = first_install
+    monkeypatch.setattr("builtins.input", lambda prompt: "FIRST-INSTALL")
+
+    def write_failure(args, **kwargs):
+        calls.append((args, kwargs))
+        if "write_flash" in args:
+            raise fw.FirmwareError("command_failed")
+
+    monkeypatch.setattr(fw, "command", write_failure)
+    assert fw.main(["first-flash", "--port", "/dev/cu.usbserial-example"]) == 1
+    assert len(calls) == 2
+    output = capsys.readouterr()
+    assert "Previous data is already erased" in output.err
+    assert "retry ordinary flash with the same --port" in output.err
+    assert "First installation complete" not in output.out
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["first-flash"],
+        ["first-flash", "--port", "/dev/cu.test", "--yes"],
+        ["first-flash", "--po", "/dev/cu.test"],
+    ],
+)
+def test_first_install_has_no_automatic_port_or_confirmation_bypass(args):
+    with pytest.raises(SystemExit):
+        fw.parser().parse_args(args)
+
+
 @pytest.mark.parametrize("offset", ["0x9000", "0x210000", "0x0"])
 def test_flash_rejects_private_partition_or_merged_image(build_files, offset):
     directory, files = build_files
@@ -159,10 +356,11 @@ def test_flash_rejects_unexpected_binary_path(build_files):
 
 
 @pytest.mark.parametrize("port", ["", "auto", "--erase-all", "/dev/cu.test\n"])
-def test_no_automatic_or_ambiguous_flash_port(port, monkeypatch):
+@pytest.mark.parametrize("action", ["flash", "first_flash", "status", "serial_status"])
+def test_no_automatic_or_ambiguous_flash_port(port, action, monkeypatch):
     monkeypatch.setattr(fw, "idf_environment", lambda: pytest.fail("Must reject before SDK/USB"))
     with pytest.raises(fw.FirmwareError):
-        fw.flash(port)
+        getattr(fw, action)(port)
 
 
 def test_configuration_preserves_utf8_wifi_and_uses_expected_uart_schema(config):
@@ -291,6 +489,137 @@ class FakeSerial:
         return next(self.responses, b"")
 
 
+@pytest.mark.parametrize("configured", [True, False])
+def test_status_wrapper_uses_sdk_and_only_prints_safe_fields(monkeypatch, capsys, configured):
+    calls = []
+    env = {"SDK": "test"}
+    monkeypatch.setattr(fw, "idf_environment", lambda: env)
+    monkeypatch.setattr(fw, "idf_python", lambda _: Path("/sdk/python"))
+    response = {
+        "status": "ready",
+        "configured": configured,
+        "firmware_version": "0.2.0",
+        "ssid": "private-wifi",
+        "token": "private-token",
+        "password": "private-password",
+    }
+
+    def worker(args, **kwargs):
+        calls.append((args, kwargs))
+        return json.dumps(response)
+
+    monkeypatch.setattr(fw, "command", worker)
+    assert fw.main(["status", "--port", "/dev/cu.usbserial-example"]) == 0
+    assert calls == [
+        (
+            [
+                "/sdk/python",
+                str(Path(fw.__file__).resolve()),
+                "_serial-status",
+                "--port",
+                "/dev/cu.usbserial-example",
+            ],
+            {"env": env, "capture": True},
+        )
+    ]
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "status": "ready",
+        "configured": configured,
+        "firmware_version": "0.2.0",
+    }
+    assert "private-" not in output.out + output.err + repr(calls)
+
+
+def test_status_usb_ignores_noise_and_filters_extra_private_fields(monkeypatch, capsys):
+    monkeypatch.setattr(fw.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        FakeSerial,
+        "lines",
+        [
+            b"boot: private-token\n",
+            b"{bad-json}\n",
+            b'{"status":"configured"}\n',
+            b'{"status":"ready","configured":"true","firmware_version":"0.2.0"}\n',
+            b'{"status":"ready","configured":true,"firmware_version":"private-token"}\n',
+            b'{"status":"ready","configured":false,"firmware_version":"0.2.0",'
+            b'"ssid":"private-wifi","token":"private-token"}\n',
+        ],
+    )
+    assert fw.serial_status("/dev/cu.usbserial-example", serial_class=FakeSerial) == {
+        "status": "ready",
+        "configured": False,
+        "firmware_version": "0.2.0",
+    }
+    handle = FakeSerial.instance
+    assert handle.closed
+    assert handle.written == b'{"command":"status"}\n'
+    assert handle.dtr is False and handle.rts is False
+    assert capsys.readouterr() == ("", "")
+
+
+def test_status_missing_version_is_explicitly_unknown(monkeypatch):
+    monkeypatch.setattr(fw.time, "sleep", lambda _: None)
+    monkeypatch.setattr(FakeSerial, "lines", [b'{"status":"ready","configured":true}\n'])
+    result = fw.serial_status("/dev/cu.usbserial-example", serial_class=FakeSerial)
+    assert result == {"status": "ready", "configured": True, "firmware_version": "unknown"}
+
+
+@pytest.mark.parametrize("lines", [[], [b"{bad-json}\n"], [b"private-token\n"]])
+def test_status_missing_valid_response_times_out_without_echoing(monkeypatch, capsys, lines):
+    monkeypatch.setattr(fw.time, "sleep", lambda _: None)
+    monkeypatch.setattr(FakeSerial, "lines", lines)
+    clock = iter([0, 0.1, 21])
+    monkeypatch.setattr(fw.time, "monotonic", lambda: next(clock))
+    with pytest.raises(fw.FirmwareError, match="status_response_timeout"):
+        fw.serial_status("/dev/cu.usbserial-example", serial_class=FakeSerial)
+    assert FakeSerial.instance.closed
+    assert capsys.readouterr() == ("", "")
+
+
+def test_status_rejects_unbounded_serial_noise(monkeypatch, capsys):
+    monkeypatch.setattr(fw.time, "sleep", lambda _: None)
+    monkeypatch.setattr(FakeSerial, "lines", [b"x" * 2049] * 33)
+    with pytest.raises(fw.FirmwareError, match="status_response_limit"):
+        fw.serial_status("/dev/cu.usbserial-example", serial_class=FakeSerial)
+    assert FakeSerial.instance.closed
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "private-token",
+        "null",
+        '{"status":"ready","configured":1,"token":"private-token"}',
+        '{"status":"ready","configured":true,"firmware_version":"private-token"}',
+        '{"status":"ready","configured":true,"firmware_version":2}',
+    ],
+)
+def test_status_wrapper_rejects_invalid_worker_output_without_echoing(
+    monkeypatch, capsys, response
+):
+    monkeypatch.setattr(fw, "idf_environment", lambda: {})
+    monkeypatch.setattr(fw, "idf_python", lambda _: Path("/sdk/python"))
+    monkeypatch.setattr(fw, "command", lambda *args, **kwargs: response)
+    assert fw.main(["status", "--port", "/dev/cu.usbserial-example"]) == 1
+    assert capsys.readouterr() == ("", "Firmware tool: device_status_invalid\n")
+
+
+def test_status_worker_entry_prints_only_sanitized_result(monkeypatch, capsys):
+    safe = {"status": "ready", "configured": False, "firmware_version": "unknown"}
+    calls = []
+
+    def inspect(port):
+        calls.append(port)
+        return safe
+
+    monkeypatch.setattr(fw, "serial_status", inspect)
+    assert fw.main(["_serial-status", "--port", "/dev/cu.usbserial-example"]) == 0
+    assert calls == ["/dev/cu.usbserial-example"]
+    assert json.loads(capsys.readouterr().out) == safe
+
+
 def test_usb_ignores_noise_without_echoing_and_requires_saved_ack(config, monkeypatch, capsys):
     monkeypatch.setattr(fw.time, "sleep", lambda _: None)
     monkeypatch.setattr(
@@ -353,6 +682,7 @@ def test_check_requires_native_wire_interoperability_without_usb(workspace, monk
 def test_public_help_has_no_secret_argument_or_internal_worker():
     help_text = fw.parser().format_help()
     assert "_serial-configure" not in help_text
+    assert "_serial-status" not in help_text
     with pytest.raises(SystemExit):
         fw.parser().parse_args(["flash"])
     with pytest.raises(SystemExit):

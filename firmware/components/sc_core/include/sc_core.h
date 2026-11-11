@@ -20,7 +20,9 @@ enum {
     SC_Q_INVALID = 1u << 2, SC_Q_DMA_OVERFLOW = 1u << 3,
     SC_Q_CLIPPED = 1u << 4, SC_Q_NUMERIC_FLOOR = 1u << 5,
     SC_Q_WARMING = 1u << 6, SC_Q_INTERRUPTED = 1u << 7,
-    SC_Q_MERGED = 1u << 8, SC_Q_INCOMPLETE = 1u << 9
+    SC_Q_MERGED = 1u << 8, SC_Q_INCOMPLETE = 1u << 9,
+    SC_Q_LOW_LIGHT = 1u << 10, SC_Q_OUT_OF_RANGE = 1u << 11,
+    SC_Q_BUS_ERROR = 1u << 12
 };
 
 typedef struct {
