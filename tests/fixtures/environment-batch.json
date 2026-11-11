@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "device_id": "synthetic-device",
+  "boot_id": "synthetic-boot",
+  "records": [{
+    "record_type": "minute",
+    "seq": 0,
+    "measurement_profile_id": "synthetic-profile",
+    "mono_start_ms": 0,
+    "mono_end_ms": 60000,
+    "quality": [],
+    "metrics": {
+      "temperature_c": {"unit": "degC", "state": "available", "expected_count": 6, "observed_count": 6, "valid_count": 6, "mean": 21.5, "min": 21.0, "max": 22.0, "quality": []},
+      "relative_humidity_pct": {"unit": "percent", "state": "available", "expected_count": 6, "observed_count": 6, "valid_count": 6, "mean": 50.0, "min": 49.0, "max": 51.0, "quality": []},
+      "illuminance_lux": {"unit": "lx", "state": "available", "expected_count": 60, "observed_count": 60, "valid_count": 60, "mean": 0.0, "min": 0.0, "max": 0.0, "quality": ["low_light_limit"]},
+      "sound_relative": {
+        "unit": "dBFS", "state": "available", "expected_count": 60, "observed_count": 60, "valid_count": 60,
+        "energy_mean_dbfs": -40.0, "max_1s_rms_dbfs": -39.0,
+        "expected_samples": 960000, "observed_samples": 960000, "valid_samples": 960000,
+        "valid_duration_ms": 60000, "valid_1s_count": 60, "dma_overflow_count": 0, "clipped_samples": 0,
+        "detected_count": null, "stored_count": null, "merged_count": null, "dropped_count": null,
+        "event_detector_state": "warming", "event_valid_duration_ms": 0, "quality": ["warming"]
+      }
+    }
+  }],
+  "time_anchors": [{"anchor_id": "0", "monotonic_ms": 0, "utc_at": "2026-01-01T00:00:00Z", "source": "ntp", "uncertainty_ms": null, "quality": []}],
+  "device_status": {"status_seq": 0, "monotonic_ms": 60000, "queued_records": 1, "lost_counts": {"minute": 0, "event": 0, "anchor": 0}, "lost_ranges": [], "ranges_truncated": false, "quality": []}
+}

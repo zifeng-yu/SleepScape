@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     web_auth_file: Path | None = None
     web_allowed_hosts: list[str] = ["localhost", "127.0.0.1", "[::1]"]
+    environment_ingest_enabled: bool = False
     debug_api_docs: bool = False
     demo: bool = False
     garmin_base_url: Literal[

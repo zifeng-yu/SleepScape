@@ -44,6 +44,24 @@ def main() -> None:
     commands.add_parser("db-backup", help="在线创建新的私有SQLite备份并验证，不覆盖现有文件")
     restore = commands.add_parser("db-restore-check", help="仅在临时目录验证备份恢复，不覆盖源库")
     restore.add_argument("backup", type=Path, help="相对data目录的备份路径，或绝对路径")
+    for name in ("environment-register", "environment-profile"):
+        command = commands.add_parser(name, help="离线注册环境设备或不可变测量配置")
+        command.add_argument("--device-id", required=True)
+        command.add_argument("--profile-id", required=True)
+        command.add_argument("--profile-file", type=Path, required=True)
+        if name == "environment-register":
+            command.add_argument(
+                "--token-file",
+                type=Path,
+                required=True,
+                help="新建私有文件保存设备令牌，不在终端显示",
+            )
+    command = commands.add_parser("environment-rotate-token", help="轮换设备令牌，旧令牌立即失效")
+    command.add_argument("--device-id", required=True)
+    command.add_argument("--token-file", type=Path, required=True)
+    command = commands.add_parser("environment-revoke", help="撤销设备上传权限，保留历史数据")
+    command.add_argument("--device-id", required=True)
+    commands.add_parser("environment-status", help="只读检查环境接收状态，不联网、不建库")
     sync = commands.add_parser("garmin-sync", help="同步今日暂定睡眠与截至昨日的全天数据")
     sync.add_argument("--plan-only", action="store_true", help="只读运行元数据预览计划，不联网")
     sync.add_argument("--detail-days", type=int, default=7)
@@ -60,6 +78,46 @@ def main() -> None:
     commands.add_parser("garmin-audit", help="只读源库，在临时库验证重放、去重及修订保护")
     args = parser.parse_args()
     settings = Settings()
+
+    if args.command.startswith("environment-"):
+        from sleepscape.services.environment import (
+            identifiers,
+            register_device,
+            register_profile,
+            rotate_device_token,
+        )
+        from sleepscape.storage.environment import EnvironmentError, revoke, status
+
+        try:
+            if args.command == "environment-register":
+                result = register_device(
+                    settings, args.device_id, args.profile_id, args.profile_file, args.token_file
+                )
+            elif args.command == "environment-profile":
+                result = register_profile(
+                    settings, args.device_id, args.profile_id, args.profile_file
+                )
+            elif args.command == "environment-rotate-token":
+                result = rotate_device_token(settings, args.device_id, args.token_file)
+            elif args.command == "environment-revoke":
+                identifiers(args.device_id)
+                revoke(settings.data_dir, args.device_id)
+                result = {"status": "revoked", "device_id": args.device_id}
+            else:
+                result = status(settings.data_dir)
+        except EnvironmentError as exc:
+            emit({"status": "environment_operation_failed", "code": str(exc)})
+            raise SystemExit(1) from None
+        except Exception:
+            emit(
+                {
+                    "status": "environment_operation_failed",
+                    "code": "local_environment_operation_failed",
+                }
+            )
+            raise SystemExit(1) from None
+        emit(result)
+        return
 
     if args.command in {"db-backup", "db-restore-check"}:
         try:

@@ -1,6 +1,6 @@
 # 安装、运行与维护
 
-更新：2026-11-10。本机已有可用配置、数据和程序；已有配置不必重建。
+更新：2026-11-11。本机已有可用配置、数据和程序；已有配置不必重建。
 本文只维护操作步骤，实施状态与测试结果见[核验报告](verification.md)。
 
 ## 本机安装与启动
@@ -40,6 +40,7 @@ uv run --locked sleepscape serve
 | `SLEEPSCAPE_HOST` / `SLEEPSCAPE_PORT` | `127.0.0.1` / `8000` |
 | `SLEEPSCAPE_WEB_AUTH_FILE` | 默认不设置；部署使用`.secrets/dashboard-auth.json` |
 | `SLEEPSCAPE_WEB_ALLOWED_HOSTS` | 默认本机域名/IP；远程部署填写实际域名JSON数组 |
+| `SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED` | 默认false；实际HTTPS部署并登记设备后才改true，控制唯一环境POST入口 |
 | `SLEEPSCAPE_DEBUG_API_DOCS` | 默认false；开启只提供受保护的`/openapi.json`，`/docs`始终关闭 |
 
 项目Settings读取配置，再交给官方SDK；`SLEEPSCAPE_GARMIN_*`是本项目的路径配置。
@@ -117,7 +118,7 @@ uv run --locked sleepscape db-restore-check "backups/实际备份文件名.sqlit
 ```
 
 第二条使用第一条输出的`backup_path`，相对路径以data目录为基准。
-备份用SQLite Online Backup API包含已提交WAL，经完整性、外键、raw哈希/JSON验证后保存为新UUID文件，不覆盖旧备份。
+备份用SQLite Online Backup API包含已提交WAL，经完整性、外键、raw哈希/JSON及环境表一致性验证后保存为新UUID文件，不覆盖旧备份。
 恢复检查只在私有临时目录恢复、核对数量和完整性，结束清理，不覆盖运行库；当前未提供自动切换生产库命令。
 成功后更新私有`backup-status.json`；状态页表示最近本地验证成功，不保证文件永久存在、已离机或已加密。
 目前没有加密、离机复制、定时备份或自动清理；自行管理保留数量，并在清理前核验可恢复副本。
@@ -178,12 +179,152 @@ make clean-dev
 保留tests中的必要合成回归；浏览器验收先确认demo=true，不使用真实数据截图。
 `browser-install`重建Node/Chromium开发依赖，`browser-check`启动隔离合成服务；这些依赖不进入生产运行。
 `clean`删除测试报告/截图、构建产物和代码缓存，`clean-dev`另删除node_modules与.browser-cache；下次浏览器验收先重新安装。
-清理入口不删除.venv、源码、tests、私有凭据、实际数据库、原始观测、生产核验报告或备份。
+`clean`也删除可重建的`firmware/build/`、生成的`sdkconfig`及旧构建配置；刷写前需要重新`make firmware-build`。
+清理入口不删除.venv、.firmware-tools、源码、tests、私有凭据、实际数据库、原始观测、生产核验报告或备份。
 不要手工只拷贝正在写入的SQLite主文件做备份，不通过删除WAL或原始观测“清理”运行库。
 
-## 硬件阶段入口（尚未开发操作工具）
+## 硬件构建与检查
 
-采购前先阅读[采购清单](procurement.md)及[接线/固件方案](plans/hardware.md)。主方案无需焊接，
-后续交付预编译固件与macOS USB刷写/配置入口；目前仓库没有可执行的硬件刷写命令或设备上传路由。
-不能将厂商语音固件当作SleepScape固件，也不把Garmin密钥写入硬件。
-实际烧录、Wi-Fi配置、设备令牌生成/撤销、故障处理在工具实现后统一更新到本节，不维护平行旧教程。
+先阅读[采购清单](procurement.md)与[接线方案](plans/hardware.md)。以下入口已经实现，采购前软件核验结果见报告；
+真实刷写、接线、Wi-Fi/传感器和新手完整操作仍需到货验收。当前没有代用户下单、部署或登记真实设备。
+
+在开发电脑仓库运行；服务器不需要ESP-IDF。Mac还需Apple命令行开发工具提供Git/clang；若提示未安装，先运行`xcode-select --install`并完成系统安装界面。项目脚本不代替这一系统步骤：
+
+```sh
+make firmware-setup
+make firmware-build
+make firmware-check
+```
+
+setup固定ESP-IDF v5.5.6提交及子模块，使用项目Python3.12对应的基础解释器，把SDK依赖、CMake3.30.2、Ninja1.12.1装入`.firmware-tools/`，不修改系统Python或安装IDE。
+build产生`firmware/build/sleepscape_environment.bin`并强制应用镜像≤1.8MiB。check运行C主机算法/队列测试以及强制的C→Python协议互通；缺SDK或互通依赖会失败，不能以跳过代替通过。
+CI的固件任务独立执行setup/build/check；普通Python/浏览器测试与它分开。源码和固定版本是交付基础，构建产物可清理后重建。
+
+到货后断电按图连接，USB数据线接电脑。先确认目标串口，例如macOS的`/dev/cu.usbserial-…`，把下面占位值换成实际端口：
+
+```sh
+make firmware-flash PORT=/dev/cu.实际串口
+```
+
+工具默认115200，仅写启动程序、分区表和应用，校验允许的三个地址，不整片擦除、不写NVS/离线队列。不会自动选择其他USB设备。
+串口找不到时先核对数据线和对应USB驱动；设备未进入下载模式时按原厂板卡说明操作，不通过擦除整片Flash试错。
+
+## 环境设备登记与HTTPS接收
+
+以下服务端命令必须在**实际负责接收上传的服务器及其数据库配置**下运行；在本机登记不会自动登记到云服务器。
+先完成上文HTTPS与域名白名单部署，保留8000仅本机监听，再在服务端私有`.env`中设置：
+
+```dotenv
+SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED=true
+```
+
+重启Web服务使设置生效。未启用时环境入口关闭；公网入口必须使用HTTPS，不能用伪造代理头或普通HTTP绕过。
+设备走独立Bearer认证，不使用浏览器Basic密码或Garmin Key。Caddy必须把Authorization透传给应用，不加第二套覆盖设备认证的Basic。
+
+首次准备设备档案，保留已有私有目录与文件，只复制尚不存在的文件：
+
+```sh
+mkdir -p .secrets
+chmod 700 .secrets
+cp -n firmware/profile.example.json .secrets/environment-profile.json
+chmod 600 .secrets/environment-profile.json
+```
+
+编辑私有档案中的`placement_id`，用实际固定摆位的标识替换占位文字，例如`bedside-left-2026-11`。
+其他硬件、固件版本、处理方式和阈值字段必须与刷入程序匹配；没有校准就保留`uncalibrated`，不能为了通过校验虚填测量能力。
+下面ID为示例，可保持一致使用，不能把自己的秘密填入命令参数：
+
+```sh
+uv run --locked sleepscape environment-register \
+  --device-id bedroom-01 --profile-id bedroom-v1 \
+  --profile-file .secrets/environment-profile.json \
+  --token-file .secrets/environment-device.json
+uv run --locked sleepscape environment-status
+```
+
+若目标机已有数据库，首次登记前先执行上文`db-backup`并确认恢复检查成功。登记命令校验现有基础表，再以事务建立环境表及设备记录；它不会自动生成备份，Garmin事实不被替换。令牌随机生成，只把哈希存库；
+`--token-file`必须是不存在的新文件，输出为JSON，包含device_id、profile_id和token，权限600、父目录700。终端只报告成功状态，不显示令牌。
+status只读本地环境接收状态，不联网、不凭空创建数据库；“已登记”不代表设备已经上传。
+
+## USB配置与首次上传
+
+USB操作在连接硬件的开发电脑上执行。若令牌在云端生成，通过已有加密SSH通道安全复制到本机私有目录，并核对文件600/目录700；
+不要把内容粘贴进聊天、日志、终端命令或公共配置。也不要拿Garmin Key尝试设备令牌字段。
+
+```sh
+uv run --locked python tools/firmware.py configure \
+  --port /dev/cu.实际串口 \
+  --token-file .secrets/environment-device.json
+```
+
+工具从注册JSON自动读取device_id/profile_id/token，只交互询问完整上传地址、2.4GHz Wi-Fi名称和隐藏密码。
+上传地址为`https://你的实际域名/api/v1/ingest/environment-batches`，不带查询参数、片段或用户名密码；Wi-Fi密码为空或8–63字节。
+它通过115200 UART发送单行配置，仅收到“已写入NVS”的ACK才报告保存成功；设备随后重启，串口输出不会回显秘密。
+没有可隐藏输入的终端时会拒绝回显降级；可改用权限600、目录700的私有完整配置JSON：
+
+```sh
+uv run --locked python tools/firmware.py configure \
+  --port /dev/cu.实际串口 --config-file .secrets/environment-usb.json \
+  --token-file .secrets/environment-device.json
+```
+
+这里USB配置JSON填写server_url、ssid、password，可省略由令牌文件提供的device_id/profile_id；**不能再包含token**。
+显式填写的设备/配置ID必须与令牌JSON一致，否则拒绝。若不使用`--token-file`，完整配置JSON需包含全部六项。
+不用文件也可运行`make firmware-configure PORT=/dev/cu.实际串口`，手动填写ID、地址、Wi-Fi，令牌和密码均隐藏输入。
+
+配置成功只证明NVS写入。还需在服务器`environment-status`确认新增真实记录，并检查时钟锚点与各通道覆盖/故障；
+当前环境曲线尚未接入看板，不能以Garmin页面能打开代替硬件端到端验收。
+确认后改接墙上电源、固定摆位。换Wi-Fi可再次USB配置，不必重刷程序。
+
+## 换摆位、令牌轮换与撤销
+
+改变摆位或测量设置时先准备新档案：
+
+```sh
+cp -n firmware/profile.example.json .secrets/environment-profile-next.json
+chmod 600 .secrets/environment-profile-next.json
+```
+
+编辑新档案记录实际摆位/设置，再登记新的profile_id；已登记档案不可原地覆盖：
+
+```sh
+uv run --locked sleepscape environment-profile \
+  --device-id bedroom-01 --profile-id bedroom-v2 \
+  --profile-file .secrets/environment-profile-next.json
+```
+
+新档案必须填写实际变更。设备USB配置也要切换到同一新ID；旧记录保留原配置。注册JSON内若仍写旧profile_id，
+工具会拒绝与新配置混用；可以更新该私有JSON中的profile_id为已经登记的新ID，或用下面轮换流程取得不带旧profile_id的新令牌文件。
+
+```sh
+uv run --locked sleepscape environment-rotate-token \
+  --device-id bedroom-01 --token-file .secrets/environment-device-rotated.json
+```
+
+轮换立即使旧令牌失效，已有历史与待补传记录保留；新JSON包含device_id/token，USB配置时需填写已登记的profile_id，
+或从私有USB配置JSON读取。再执行configure并指向新令牌文件即可，不在命令行传令牌实值。
+完成切换后删除已经失效的本地旧令牌文件，避免保留多份无用敏感配置；不要删除数据或设备档案记录。
+
+```sh
+uv run --locked sleepscape environment-revoke --device-id bedroom-01
+uv run --locked sleepscape environment-status
+```
+
+撤销立即禁止该设备上传，历史仍保留。计划重新启用时执行令牌轮换，再USB配置新令牌；不能通过清库或更改设备ID绕过拒绝。
+
+## 硬件运行与故障边界
+
+| 现象 | 当前行为与处理 |
+| --- | --- |
+| 冷启动时没有网络/SNTP | 继续采样和记录boot_id/单调时间；UTC未知，取得SNTP后才允许TLS上传；不能用接收时刻补齐 |
+| Wi-Fi中断 | 1–300秒退避重连；持续供电时目标缓存48小时，容量验证不等同实机验收 |
+| 401/403 | 保留记录、提示认证拒绝并延长重试；核对登记/撤销状态，必要时轮换再USB配置 |
+| 429或普通网络错误 | 遵守有界Retry-After并退避；没有完整且匹配的逐记录ACK就不删除待发记录 |
+| 首次空白存储 | 仅确认整个区域全空白才初始化文件系统；普通刷写保留已有数据 |
+| 文件系统损坏 | 不自动格式化、不整片擦除；启动时停止采集初始化并报告存储异常，保留现场后诊断 |
+| 拒收记录隔离区达到64KiB | 停止继续隔离/上传推进并保留数据，不因此停止其他采样任务；需检查存储状态后处理 |
+| 单通道缺失/异常 | 记录缺失、有效覆盖及质量，不用零值伪装成功；其余通道按真实状态继续 |
+| 看板没有环境曲线 | 当前仍待环境查询与UTC映射开发，不属于刷写成功后的自动展示承诺 |
+
+普通NVS不提供抗物理读取保证；任何流程都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。
+实物阶段还须完成读数合理性、USB驱动、8小时并发采样、48小时离线补传和随机掉电测试，核验报告将区分主机通过与实物通过。

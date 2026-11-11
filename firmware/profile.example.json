@@ -1,0 +1,12 @@
+{
+  "hardware_model": "m5stack-c008-c",
+  "hardware_revision": "stock",
+  "firmware_version": "0.1.0",
+  "temperature_sensor": "dfrobot-sen0528-aht20",
+  "light_sensor": "m5stack-u136-bh1750",
+  "microphone": "spm1423",
+  "placement_id": "replace-with-actual-placement",
+  "calibration_id": "uncalibrated",
+  "sound_processing": "pdm-pcm16-fixed-no-agc",
+  "threshold_profile_id": "relative-sound-60s-10db-6db"
+}

@@ -13,6 +13,8 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from sleepscape.config import Settings
+from sleepscape.domain.environment_integrity import validate_environment_row
+from sleepscape.storage.environment import ENVIRONMENT_TABLES, PAYLOAD_TABLES
 from sleepscape.storage.reports import write_private_json
 
 TABLES = ("runs", "raw_snapshots", "normalized_records", "requests")
@@ -57,8 +59,16 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
     }
     if not set(TABLES) <= tables:
         raise BackupError("backup_schema_invalid")
+    present = set(ENVIRONMENT_TABLES) & tables
+    if present and present != set(ENVIRONMENT_TABLES):
+        raise BackupError("backup_environment_schema_incomplete")
+    if present and connection.execute("SELECT version FROM environment_schema").fetchall() != [
+        (1,)
+    ]:
+        raise BackupError("backup_environment_schema_unsupported")
+    selected = TABLES + (ENVIRONMENT_TABLES if present else ())
     return {
-        name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in TABLES
+        name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in selected
     }
 
 
@@ -81,6 +91,15 @@ def _validate(connection: sqlite3.Connection) -> dict[str, int]:
             json.loads(raw)
         except (TypeError, ValueError, zlib.error):
             raise BackupError("backup_raw_json_invalid") from None
+    if "environment_schema" in counts:
+        for table in PAYLOAD_TABLES:
+            cursor = connection.execute(f"SELECT * FROM {table}")
+            columns = [column[0] for column in cursor.description]
+            for row in cursor:
+                try:
+                    validate_environment_row(table, dict(zip(columns, row, strict=True)))
+                except (ValueError, TypeError, KeyError, RecursionError):
+                    raise BackupError("backup_environment_payload_invalid") from None
     return counts
 
 

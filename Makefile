@@ -1,4 +1,4 @@
-.PHONY: install run doctor check format browser-install browser-check clean clean-dev
+.PHONY: install run doctor check format browser-install browser-check clean clean-dev firmware-setup firmware-build firmware-check firmware-flash firmware-configure
 
 install:
 	uv sync --locked
@@ -29,3 +29,18 @@ clean:
 
 clean-dev:
 	python3 -B tools/clean_workspace.py --include-dev-deps
+
+firmware-setup:
+	uv run --locked python tools/firmware.py setup
+
+firmware-build:
+	uv run --locked python tools/firmware.py build
+
+firmware-check:
+	uv run --locked python tools/firmware.py check
+
+firmware-flash:
+	uv run --locked python tools/firmware.py flash --port "$(PORT)"
+
+firmware-configure:
+	uv run --locked python tools/firmware.py configure --port "$(PORT)"

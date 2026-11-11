@@ -1,4 +1,4 @@
-"""Read-only dashboard and bounded data APIs; no collection during HTTP requests."""
+"""Read-only dashboard plus one separately authenticated environment ingestion API."""
 
 import logging
 from datetime import date, datetime, timedelta
@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from sleepscape import __version__
 from sleepscape.config import Settings
+from sleepscape.web.device_security import INGEST_PATH, DeviceGate
 from sleepscape.web.security import SECURITY_HEADERS, AccessGate
 
 STATIC_DIR = Path(__file__).parent / "web" / "static"
@@ -35,6 +37,7 @@ def _query(operation, *args, **kwargs):
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings if settings is not None else Settings()
     gate = AccessGate(settings)
+    device_gate = DeviceGate(settings)
     app = FastAPI(
         title="SleepScape",
         version=__version__,
@@ -48,7 +51,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def private_read_only_access(request, call_next):
-        response = await gate.check(request)
+        if request.method == "POST" and request.url.path == INGEST_PATH:
+            response = await device_gate.check(request)
+        else:
+            response = await gate.check(request)
         if response is None:
             response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
@@ -68,6 +74,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from sleepscape.services.views import DashboardService
 
         return DashboardService(settings)
+
+    @app.post(INGEST_PATH)
+    async def environment_batch(request: Request):
+        from sleepscape.domain.environment import MAX_BATCH_BYTES
+        from sleepscape.services.environment import parse_batch, receive
+        from sleepscape.storage.environment import EnvironmentError
+
+        length = request.headers.get("content-length")
+        if length is not None:
+            if not length.isascii() or not length.isdecimal():
+                raise HTTPException(400, "invalid_content_length")
+            if len(length) > 10 or int(length) > MAX_BATCH_BYTES:
+                raise HTTPException(413, "environment_body_too_large")
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > MAX_BATCH_BYTES:
+                raise HTTPException(413, "environment_body_too_large")
+            body.extend(chunk)
+        try:
+            batch = parse_batch(bytes(body))
+            return await run_in_threadpool(
+                receive, settings, request.state.environment_device_id, batch
+            )
+        except EnvironmentError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        except Exception as exc:
+            logging.getLogger("sleepscape").warning(
+                "environment_ingest_failed [%s]", type(exc).__name__
+            )
+            raise HTTPException(503, "environment_storage_unavailable") from None
 
     @app.get("/", include_in_schema=False)
     def dashboard():

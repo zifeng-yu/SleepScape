@@ -40,3 +40,10 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# Local ESP-IDF tools and generated firmware products
+.firmware-tools/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/

@@ -15,6 +15,9 @@ ARTIFACTS = (
     "playwright-report",
     "dist",
     "build",
+    "firmware/build",
+    "firmware/sdkconfig",
+    "firmware/sdkconfig.old",
     ".DS_Store",
 )
 DEVELOPMENT_DEPENDENCIES = ("node_modules", ".browser-cache")
