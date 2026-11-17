@@ -13,8 +13,12 @@
 
 typedef struct { bool ok; } writer_t;
 static void num(writer_t *w, cJSON *o, const char *key, double value) {
-    if (!isfinite(value) || fabs(value) > (double)SAFE_INT ||
-        !cJSON_AddNumberToObject(o, key, value)) w->ok = false;
+    if (!isfinite(value) || fabs(value) > (double)SAFE_INT) { w->ok = false; return; }
+    if (floor(value) == value) {
+        /* cJSON's tolerant double printer can collapse adjacent 53-bit IDs. */
+        char integer[32]; snprintf(integer, sizeof(integer), "%.0f", value);
+        if (!cJSON_AddRawToObject(o, key, integer)) w->ok = false;
+    } else if (!cJSON_AddNumberToObject(o, key, value)) w->ok = false;
 }
 static void nullable(writer_t *w, cJSON *o, const char *key, double value) {
     if (isfinite(value)) num(w, o, key, value);
@@ -279,11 +283,8 @@ static bool unique_keys(const cJSON *value) {
     }
     return true;
 }
-bool sc_wire_ack(const char *response, const sc_queue_item_t *rows, size_t count) {
-    if (!response || strnlen(response, SC_WIRE_MAX_BYTES + 1) > SC_WIRE_MAX_BYTES ||
-        !valid_batch(rows, count) || !shallow_json(response)) return false;
-    cJSON *root = cJSON_ParseWithOpts(response, NULL, true);
-    if (!root) return false;
+bool sc_wire_ack_json(const cJSON *root, const sc_queue_item_t *rows, size_t count) {
+    if (!root || !valid_batch(rows, count)) return false;
     bool ok = cJSON_IsObject(root) && unique_keys(root) && cJSON_GetArraySize(root) == 7 &&
               number_is(root, "schema_version", 1) &&
               text_is(root, "device_id", rows[0].source.device_id) &&
@@ -319,5 +320,12 @@ bool sc_wire_ack(const char *response, const sc_queue_item_t *rows, size_t count
     }
     ok = ok && (size_t)cJSON_GetArraySize(records) == record_count &&
          (size_t)cJSON_GetArraySize(anchors) == anchor_count && (status_count || cJSON_IsNull(s));
+    return ok;
+}
+bool sc_wire_ack(const char *response, const sc_queue_item_t *rows, size_t count) {
+    if (!response || strnlen(response, SC_WIRE_MAX_BYTES + 1) > SC_WIRE_MAX_BYTES ||
+        !valid_batch(rows, count) || !shallow_json(response)) return false;
+    cJSON *root = cJSON_ParseWithOpts(response, NULL, true);
+    bool ok = sc_wire_ack_json(root, rows, count);
     cJSON_Delete(root); return ok;
 }

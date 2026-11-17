@@ -32,3 +32,19 @@ build/firmware-tests/test_reject
   firmware/components/sc_core/sc_aggregate.c firmware/components/sc_core/sc_veml7700.c \
   firmware/tests/test_veml7700.c -lm -o build/firmware-tests/test_veml7700
 build/firmware-tests/test_veml7700
+
+# Use the same pinned JSON implementation as the target and wire tests.
+test -f .firmware-tools/esp-idf/components/json/cJSON/cJSON.c
+"${CC:-clang}" -std=c11 -Wno-deprecated-declarations \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+  -c .firmware-tools/esp-idf/components/json/cJSON/cJSON.c \
+  -o build/firmware-tests/cjson.o
+"${CC:-clang}" -std=c11 -D_POSIX_C_SOURCE=200809L -D_DARWIN_C_SOURCE -Wall -Wextra -Werror \
+  -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+  -Ifirmware/components/sc_core/include -Ifirmware/main \
+  -I.firmware-tools/esp-idf/components/json/cJSON \
+  firmware/components/sc_core/sc_core.c firmware/components/sc_core/sc_record.c \
+  firmware/components/sc_core/sc_queue.c firmware/main/sc_wire.c firmware/main/sc_usb.c \
+  firmware/tests/test_usb.c build/firmware-tests/cjson.o \
+  -lm -o build/firmware-tests/test_usb
+build/firmware-tests/test_usb

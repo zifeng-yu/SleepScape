@@ -565,6 +565,48 @@ def test_status_missing_version_is_explicitly_unknown(monkeypatch):
     assert result == {"status": "ready", "configured": True, "firmware_version": "unknown"}
 
 
+@pytest.mark.parametrize("mode", ["idle", "cloud", "starting", "usb", "failed"])
+def test_status_collection_mode_survives_serial_and_wrapper_filters(monkeypatch, capsys, mode):
+    monkeypatch.setattr(fw.time, "sleep", lambda _: None)
+    expected = {
+        "status": "ready",
+        "configured": mode == "cloud",
+        "firmware_version": "0.3.0",
+        "collection_mode": mode,
+    }
+    bad = {**expected, "collection_mode": "private-token"}
+    wire = {**expected, "token": "private-token", "ssid": "private-wifi"}
+    monkeypatch.setattr(
+        FakeSerial,
+        "lines",
+        [(json.dumps(item) + "\n").encode() for item in (bad, wire)],
+    )
+    received = fw.serial_status("/dev/cu.usbserial-example", serial_class=FakeSerial)
+    assert received == expected
+    monkeypatch.setattr(fw, "idf_environment", lambda: {})
+    monkeypatch.setattr(fw, "idf_python", lambda _: Path("/sdk/python"))
+    monkeypatch.setattr(fw, "command", lambda *args, **kwargs: json.dumps(received))
+    assert fw.main(["status", "--port", "/dev/cu.usbserial-example"]) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out) == expected
+    assert "private-" not in output.out + output.err
+
+
+@pytest.mark.parametrize("mode", ["private-token", None, False, 3, [], {}])
+def test_status_rejects_invalid_collection_mode_without_echoing(monkeypatch, capsys, mode):
+    response = {
+        "status": "ready",
+        "configured": False,
+        "firmware_version": "0.3.0",
+        "collection_mode": mode,
+    }
+    monkeypatch.setattr(fw, "idf_environment", lambda: {})
+    monkeypatch.setattr(fw, "idf_python", lambda _: Path("/sdk/python"))
+    monkeypatch.setattr(fw, "command", lambda *args, **kwargs: json.dumps(response))
+    assert fw.main(["status", "--port", "/dev/cu.usbserial-example"]) == 1
+    assert capsys.readouterr() == ("", "Firmware tool: device_status_invalid\n")
+
+
 @pytest.mark.parametrize("lines", [[], [b"{bad-json}\n"], [b"private-token\n"]])
 def test_status_missing_valid_response_times_out_without_echoing(monkeypatch, capsys, lines):
     monkeypatch.setattr(fw.time, "sleep", lambda _: None)

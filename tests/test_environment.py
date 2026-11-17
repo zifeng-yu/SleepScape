@@ -642,8 +642,12 @@ def test_saturated_illuminance_remains_invalid_null_not_darkness(settings, paylo
         EnvironmentBatch.model_validate(payload)
 
 
-def test_known_firmware_profile_rejects_self_consistent_but_wrong_driver_parameters(profile):
+@pytest.mark.parametrize("firmware_version", ["0.2.0", "0.3.0"])
+def test_known_firmware_profile_rejects_self_consistent_but_wrong_driver_parameters(
+    profile, firmware_version
+):
     values = profile.model_dump(mode="json")
+    values["firmware_version"] = firmware_version
     values["light_measurement"].update(
         gain=1.0, resolution_lux=0.0168, range_max_lux=1100.9712, als_conf=0x0080
     )
@@ -669,10 +673,12 @@ def test_known_firmware_profile_rejects_self_consistent_but_wrong_driver_paramet
         ("i2c_bus", "hub_model", "other-hub"),
     ],
 )
+@pytest.mark.parametrize("firmware_version", ["0.2.0", "0.3.0"])
 def test_known_firmware_registration_cannot_claim_different_sensor_settings(
-    profile, section, name, value
+    profile, section, name, value, firmware_version
 ):
     values = profile.model_dump(mode="json")
+    values["firmware_version"] = firmware_version
     values[section][name] = value
     with pytest.raises(ValidationError, match="known_firmware_sensor_configuration_mismatch"):
         MeasurementProfile.model_validate(values)

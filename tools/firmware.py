@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 import re
+import selectors
 import stat
 import subprocess
 import sys
@@ -564,7 +565,13 @@ def status_fields(response: object) -> dict[str, str | bool]:
         and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", version) is None
     ):
         raise FirmwareError("device_status_invalid")
-    return {"status": "ready", "configured": response["configured"], "firmware_version": version}
+    result = {"status": "ready", "configured": response["configured"], "firmware_version": version}
+    if "collection_mode" in response:
+        mode = response["collection_mode"]
+        if not isinstance(mode, str) or mode not in {"idle", "cloud", "starting", "usb", "failed"}:
+            raise FirmwareError("device_status_invalid")
+        result["collection_mode"] = mode
+    return result
 
 
 def status(port: str) -> None:
@@ -623,6 +630,251 @@ def serial_status(port: str, *, serial_class=None, timeout=20.0) -> dict[str, st
         raise FirmwareError("status_usb_failed") from exc
 
 
+USB_RESPONSES = {
+    "usb_start": {"usb_started"},
+    "usb_poll": {"usb_batch", "usb_idle"},
+    "usb_ack": {"usb_acked"},
+    "usb_stop": {"usb_stopped"},
+}
+USB_MAX_RESPONSE = 65536
+
+
+def usb_json(raw: bytes | bytearray) -> object:
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate_usb_json_key")
+            value[key] = item
+        return value
+
+    def invalid_constant(value):
+        raise ValueError("nonfinite_usb_number")
+
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=invalid_constant)
+
+
+def serial_usb_exchange(handle, request: dict, *, timeout=30.0) -> dict:
+    """Bounded JSON-line transport, ignoring boot logs without exposing their contents."""
+    expected = USB_RESPONSES.get(request.get("command"))
+    if expected is None:
+        raise FirmwareError("usb_command_not_allowed")
+    wire = json.dumps(request, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+    if len(wire) > 2048:
+        raise FirmwareError("usb_command_too_large")
+    if handle.write(wire) != len(wire):
+        raise FirmwareError("usb_command_write_incomplete")
+    handle.flush()
+    deadline = time.monotonic() + timeout
+    received = 0
+    pending = bytearray()
+    while time.monotonic() < deadline:
+        chunk = handle.read(1024)
+        received += len(chunk)
+        if received > USB_MAX_RESPONSE * 2:
+            raise FirmwareError("usb_response_limit")
+        pending.extend(chunk)
+        while b"\n" in pending:
+            line, _, rest = pending.partition(b"\n")
+            pending = bytearray(rest)
+            if len(line) > USB_MAX_RESPONSE:
+                raise FirmwareError("usb_response_limit")
+            try:
+                value = usb_json(line)
+            except (ValueError, UnicodeError, RecursionError):
+                continue
+            if not isinstance(value, dict):
+                continue
+            if value.get("status") == "error":
+                raise FirmwareError("usb_device_rejected_command")
+            if value.get("status") in expected:
+                return value
+        if len(pending) > USB_MAX_RESPONSE:
+            raise FirmwareError("usb_response_limit")
+    raise FirmwareError("usb_response_timeout")
+
+
+def serial_usb_bridge(port: str, *, serial_class=None) -> None:
+    """SDK-only worker: pyserial stays in its pinned environment, never in project imports."""
+    validate_port(port)
+    if serial_class is None:
+        try:
+            from serial import Serial
+        except ImportError as exc:
+            raise FirmwareError("sdk_pyserial_missing_run_setup") from exc
+        serial_class = Serial
+    try:
+        handle = serial_class(port=None, baudrate=115200, timeout=0.2, write_timeout=3)
+        handle.dtr = False
+        handle.rts = False
+        handle.port = port
+        with handle:
+            time.sleep(2)
+            handle.reset_input_buffer()
+            for raw in iter(lambda: sys.stdin.buffer.readline(4097), b""):
+                if len(raw) > 4096 or not raw.endswith(b"\n"):
+                    raise FirmwareError("usb_command_too_large")
+                envelope = usb_json(raw)
+                if not isinstance(envelope, dict) or type(envelope.get("request_id")) is not int:
+                    raise FirmwareError("usb_bridge_request_invalid")
+                try:
+                    request = envelope.get("request")
+                    if not isinstance(request, dict):
+                        raise ValueError
+                    response = serial_usb_exchange(handle, request)
+                except FirmwareError as exc:
+                    response = {"bridge_error": str(exc)}
+                except (ValueError, TypeError, RecursionError):
+                    response = {"bridge_error": "usb_command_invalid"}
+                print(
+                    json.dumps(
+                        {"request_id": envelope["request_id"], "response": response},
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+    except FirmwareError:
+        raise
+    except Exception as exc:
+        raise FirmwareError("usb_bridge_serial_failed") from exc
+
+
+class USBBridge:
+    """Project-side bounded pipe wrapper around the pinned SDK serial worker."""
+
+    def __init__(self, port: str, env: dict[str, str]):
+        self.request_id = 0
+        self.pending = bytearray()
+        self.process = subprocess.Popen(
+            [str(idf_python(env)), str(Path(__file__).resolve()), "_serial-usb", "--port", port],
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+            # Terminal Ctrl+C belongs to the parent, which still needs the worker
+            # alive to send usb_stop before it closes/reaps this subprocess.
+            start_new_session=True,
+        )
+
+    def exchange(self, request: dict) -> dict:
+        process = self.process
+        assert process.stdin is not None and process.stdout is not None
+        request_wire = json.dumps(request, separators=(",", ":"), allow_nan=False).encode()
+        if len(request_wire) + 1 > 2048:
+            raise FirmwareError("usb_command_too_large")
+        self.request_id += 1
+        current_id = self.request_id
+        wire = (
+            json.dumps(
+                {"request_id": current_id, "request": request},
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+            + b"\n"
+        )
+        try:
+            process.stdin.write(wire)
+            process.stdin.flush()
+            deadline = time.monotonic() + 40
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                while time.monotonic() < deadline:
+                    if not selector.select(max(0, deadline - time.monotonic())):
+                        break
+                    chunk = os.read(process.stdout.fileno(), 4096)
+                    if not chunk:
+                        raise FirmwareError("usb_bridge_closed")
+                    self.pending.extend(chunk)
+                    if len(self.pending) > USB_MAX_RESPONSE + 256:
+                        raise FirmwareError("usb_response_limit")
+                    while b"\n" in self.pending:
+                        line, _, extra = self.pending.partition(b"\n")
+                        self.pending = bytearray(extra)
+                        envelope = usb_json(line)
+                        if (
+                            not isinstance(envelope, dict)
+                            or type(envelope.get("request_id")) is not int
+                        ):
+                            raise FirmwareError("usb_bridge_response_invalid")
+                        if envelope["request_id"] < current_id:
+                            # A canceled exchange may finish while finally sends stop.
+                            continue
+                        if envelope["request_id"] != current_id:
+                            raise FirmwareError("usb_bridge_response_invalid")
+                        response = envelope.get("response")
+                        if not isinstance(response, dict):
+                            raise FirmwareError("usb_bridge_response_invalid")
+                        if "bridge_error" in response:
+                            allowed = {
+                                "usb_command_not_allowed",
+                                "usb_command_too_large",
+                                "usb_command_write_incomplete",
+                                "usb_response_limit",
+                                "usb_device_rejected_command",
+                                "usb_response_timeout",
+                                "usb_command_invalid",
+                            }
+                            code = response["bridge_error"]
+                            raise FirmwareError(code if code in allowed else "usb_bridge_failed")
+                        return response
+            raise FirmwareError("usb_bridge_timeout")
+        except FirmwareError:
+            raise
+        except Exception as exc:
+            raise FirmwareError("usb_bridge_failed") from exc
+
+    def close(self) -> None:
+        if self.process.stdin:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        finally:
+            if self.process.stdout:
+                self.process.stdout.close()
+
+
+def collect(port: str, duration: int, device_id: str, profile_id: str, placement_id: str) -> None:
+    from sleepscape.config import Settings
+    from sleepscape.services.backup import BackupError
+    from sleepscape.services.environment_usb import USBCollectionError, capture, prepare
+    from sleepscape.storage.environment import EnvironmentError
+
+    validate_port(port)
+    if type(duration) is not int or not 1 <= duration <= 86400:
+        raise FirmwareError("usb_duration_requires_1_to_86400_seconds")
+    bridge = None
+    try:
+        env = idf_environment()
+        settings = Settings()
+        prepare(
+            settings, device_id, profile_id, ROOT / "firmware/profile.example.json", placement_id
+        )
+        bridge = USBBridge(port, env)
+        result = capture(
+            settings,
+            device_id,
+            profile_id,
+            duration,
+            bridge.exchange,
+            progress=lambda value: print(json.dumps(value, separators=(",", ":")), flush=True),
+        )
+        print(json.dumps(result, separators=(",", ":")), flush=True)
+    except (EnvironmentError, USBCollectionError, BackupError) as exc:
+        raise FirmwareError(str(exc)) from None
+    finally:
+        if bridge is not None:
+            bridge.close()
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="SleepScape firmware build and USB provisioning", allow_abbrev=False
@@ -649,6 +901,14 @@ def parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     inspection.add_argument("--port", required=True)
+    collection = sub.add_parser(
+        "collect", help="Collect real environment records over USB into local SQLite; no Wi-Fi"
+    )
+    collection.add_argument("--port", required=True)
+    collection.add_argument("--duration", type=int, default=180, help="Capture seconds (1..86400)")
+    collection.add_argument("--device-id", default="bedroom-01")
+    collection.add_argument("--profile-id", default="usb-bench-030")
+    collection.add_argument("--placement-id", default="bench-usb")
     provisioning = sub.add_parser(
         "configure",
         help="Send Wi-Fi/server configuration over USB without echoing secrets",
@@ -668,7 +928,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    if values and values[0] in {"_serial-configure", "_serial-status"}:
+    if values and values[0] in {"_serial-configure", "_serial-status", "_serial-usb"}:
         internal = argparse.ArgumentParser()
         internal.add_argument("--port", required=True)
         args = internal.parse_args(values[1:])
@@ -688,6 +948,10 @@ def main(argv: list[str] | None = None) -> int:
             first_flash(args.port)
         elif args.action == "status":
             status(args.port)
+        elif args.action == "collect":
+            collect(args.port, args.duration, args.device_id, args.profile_id, args.placement_id)
+        elif args.action == "_serial-usb":
+            serial_usb_bridge(args.port)
         elif args.action == "_serial-status":
             print(json.dumps(serial_status(args.port), separators=(",", ":")))
         elif args.action == "configure":

@@ -1,6 +1,6 @@
 # 安装、运行与维护
 
-更新：2026-11-11。本机已有可用配置、数据和程序；已有配置不必重建。
+更新：2026-11-17。本机已有可用配置、数据和程序；已有配置不必重建。
 本文只维护操作步骤，实施状态与测试结果见[核验报告](verification.md)。
 
 ## 本机安装与启动
@@ -129,7 +129,7 @@ uv run --locked sleepscape db-restore-check "backups/实际备份文件名.sqlit
 生产安装用`uv sync --locked --no-dev`。以下操作只在计划部署的目标机执行：
 
 1. 创建私有配置及目录，所有者为服务用户；保持data/.secrets为700、凭据和配置600，不覆盖已有配置。
-2. 配置中国区Key路径、看板密码文件及实际域名白名单，例如`SLEEPSCAPE_WEB_ALLOWED_HOSTS=["sleep.example.com"]`；示例域名须替换。
+2. 配置中国区Key路径、看板密码文件及实际公网IP白名单，例如`SLEEPSCAPE_WEB_ALLOWED_HOSTS=["198.51.100.10"]`；此保留示例IP必须换成真实服务器IP，不能加通配符。
 3. 以服务用户设置看板密码并检查`garmin-sync --plan-only`；应用保持本机监听、调试文档关闭。
 4. 审阅并安装[Web服务](../deploy/sleepscape.service)、[采集服务](../deploy/garmin-sync.service)、[定时器](../deploy/garmin-sync.timer)：
 
@@ -140,7 +140,8 @@ sudo install -m 644 deploy/garmin-sync.timer /etc/systemd/system/garmin-sync.tim
 sudo systemd-analyze verify /etc/systemd/system/sleepscape.service /etc/systemd/system/garmin-sync.service /etc/systemd/system/garmin-sync.timer
 ```
 
-替换[Caddy模板](../deploy/Caddyfile.example)域名后合并到服务器配置，不覆盖已有站点。
+当前已选择公网IP＋HTTPS。原[Caddy站点示例](../deploy/Caddyfile.example)仍是域名占位，**不能只替换成IP就宣称公网可信证书配置完成**；实际部署时按服务器Caddy版本明确配置支持IP的ACME签发和自动续期，或由受支持的ACME客户端签发后交给Caddy加载/续期重载。该配置、证书和真实端口均待服务器信息到位后实施，不覆盖已有站点。
+公网IP证书的官方依据见[Let’s Encrypt说明](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)：160小时有效期，需要自动续期并验证重载。使用对应IP SAN的可信证书，不以自签证书或关闭主机名校验替代；固件源码支持IP名称核验，实机TLS仍待测试。
 Caddy负责HTTPS并保留Authorization给应用，不再配置第二套代理Basic；不要把仓库、data或.secrets作为静态目录。
 
 ```sh
@@ -160,7 +161,7 @@ sudo systemctl enable --now garmin-sync.timer
 sudo systemctl list-timers garmin-sync.timer
 ```
 
-模板按上海时间08:30、12:30运行，Persistent补一次错过触发，历史缺口仍由sync判断。
+模板按上海时间09:00一次运行，Persistent补一次错过触发，历史缺口仍由sync判断。当前模板仅执行已有garmin-sync；按配置N日检查双源缺项、首次LLM分析的daily-run尚未实现，未来切换入口时不能保留两套重复日常任务。
 Web单worker，服务内存上限分别512MiB/768MiB是保护配置，不能代替2C2G实测。
 按[架构中的资源验收标准](architecture.md#资源预算与部署验收)观察持续运行、并发读取和每日增长；当前无自动磁盘水位保护。
 
@@ -185,8 +186,8 @@ make clean-dev
 
 ## 硬件构建与检查
 
-先阅读[采购清单](procurement.md)与[接线方案](plans/hardware.md)。以下入口已经实现，采购前软件核验结果见报告；
-真实刷写、接线、Wi-Fi/传感器和新手完整操作仍需到货验收。当前没有代用户下单、部署或登记真实设备。
+先阅读[采购清单](procurement.md)与[接线方案](plans/hardware.md)。以下入口已经实现；采购前软件验证、接线照片核对、主控芯片/Flash识别、首次刷写与USB状态检查的证据见[核验报告](verification.md)。
+当前HTTPS部署和网络凭据配置仍待进行。需要先验收传感器时，可走下文USB本机采集路径，无需Wi-Fi、HTTPS或设备令牌；各路径的实测进度见核验报告。
 
 在开发电脑仓库运行；服务器不需要ESP-IDF。Mac还需Apple命令行开发工具提供Git/clang；若提示未安装，先运行`xcode-select --install`并完成系统安装界面。项目脚本不代替这一系统步骤：
 
@@ -200,7 +201,20 @@ setup固定ESP-IDF v5.5.6提交及子模块，使用项目Python3.12对应的基
 build产生`firmware/build/sleepscape_environment.bin`并强制应用镜像≤1.8MiB。check运行C主机算法/队列测试以及强制的C→Python协议互通；缺SDK或互通依赖会失败，不能以跳过代替通过。
 CI的固件任务独立执行setup/build/check；普通Python/浏览器测试与它分开。源码和固定版本是交付基础，构建产物可清理后重建。
 
-到货后先按[硬件方案的逐步接线](plans/hardware.md#接线步骤)核对C008-C、SEN0528、SEN0228及DFR0759：两块传感器接分线模块，分线模块接主控底部的3V3/GND/G21/G25，全程断电并按文字标签核对。完成后用USB-A→USB-C数据线连接主控；只有USB-C接口的Mac需先插支持数据传输的USB-C公→USB-A母转接头。不要把仅充电线当数据线。
+### 到货后先检查主控USB识别
+
+1. 拆开外包装，不拆主控外壳；核对主控底部标签及包装型号。传感器和分线板先不接，墙上电源也暂不使用。
+2. 在Mac插入主控前后分别运行下面命令，对比新增端口。它只列设备路径，不打开串口、不发送指令：
+
+   ```sh
+   .venv/bin/python -c 'from pathlib import Path; print(*sorted(str(p) for p in Path("/dev").glob("cu.*")), sep="\n")'
+   ```
+
+3. 连接顺序为Mac → [采购表中的USB转接线](procurement.md) → FIT0641 → 主控；FIT0641的USB-C小插头接主控，USB-A大插头接转接线插口。若macOS询问是否允许配件连接，允许本次主控连接。不要把仅充电线当数据线。
+4. 核对实际新增的USB串口，例如`/dev/cu.usbserial-…`；不能猜端口，也不要选择Bluetooth或debug-console。若无新增，先检查插接、数据线及系统USB识别，再按实际芯片核对官方驱动，不预先安装无关驱动。
+5. 尚未首次安装SleepScape的新板仍运行出厂程序，不能用SleepScape的`firmware-status`协议判断主控是否正常。USB识别只验证这一步连接，未证明芯片/Flash型号、传感器、麦克风或上传通过。本项目当前样机已完成首次刷写，不必重新执行整片擦除。
+
+确认后**拔掉主控USB**，按[硬件方案的逐步接线](plans/hardware.md#接线步骤)核对C008-C、SEN0528、SEN0228及DFR0759：两块传感器接分线模块，分线模块接主控底部的3V3/GND/G21/G25，全程断电并按文字标签核对。型号、引脚和接线确认后，再接USB执行首次安装。
 
 ### 首次安装与后续升级
 
@@ -212,7 +226,7 @@ CI的固件任务独立执行setup/build/check；普通Python/浏览器测试与
 make firmware-first-flash PORT=/dev/cu.实际串口
 ```
 
-工具先校验串口、SDK和构建镜像清单，再显示整片Flash清除提示。只有你在交互终端准确输入`FIRST-INSTALL`后，才清除板上的厂商预装固件、配置及全部数据，并写入启动程序、分区表和应用。默认115200波特率。此步骤为首次接入本项目准备干净的NVS和SPIFFS区域，避免出厂程序的存储布局影响初始化。尚未对实际新板执行，实物首装验收仍待完成。
+工具先校验串口、SDK和构建镜像清单，再显示整片Flash清除提示。只有你在交互终端准确输入`FIRST-INSTALL`后，才清除板上的厂商预装固件、配置及全部数据，并写入启动程序、分区表和应用。默认115200波特率。此步骤为首次接入本项目准备干净的NVS和SPIFFS区域，避免出厂程序的存储布局影响初始化。本项目样机已完成首次刷写、普通升级、USB状态检查和四通道本机短采，记录见[核验报告](verification.md)；网络配置、HTTPS上传和长期实采仍待验收。
 
 首次安装完成后运行只读状态检查，不需要打开串口终端手写协议：
 
@@ -220,7 +234,11 @@ make firmware-first-flash PORT=/dev/cu.实际串口
 make firmware-status PORT=/dev/cu.实际串口
 ```
 
-预期为`status=ready`、`firmware_version=0.2.0`和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只发送状态查询，仅显示状态、固件版本及是否保存有效配置，不显示Wi-Fi或令牌。随后按后文完成USB配置、收到已写入NVS的确认；配置后重启应能初始化空白SPIFFS并进入采集，不能出现配置存储或队列挂载失败。这是到货首项软件验收，不以电脑构建成功代替。
+当前源码版本为`0.3.0`。新安装后应有`status=ready`、对应固件版本和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只查询状态，不显示Wi-Fi或令牌；`configured`表示网络配置是否有效，不表示USB本地采集是否正在运行。后续可选择本地USB采集，或完成网络配置后验收Wi-Fi上传。
+
+当前工具还显示固件提供的`collection_mode`：`idle`表示空闲、`usb`表示USB采集模式，另有`starting/cloud/failed`。联网模式不等于上传已成功，仍须核对接收结果；旧响应缺该字段时不猜测模式。
+
+未配置且未收到`usb_start`时，固件等待命令；收到本地采集命令后才初始化传感器和采集任务。`ready`仅表示命令能响应，不能作为传感器通过证据。不填假Wi-Fi、地址或凭据绕过网络配置。
 
 
 **已经使用SleepScape后的普通升级**改用：
@@ -232,10 +250,38 @@ make firmware-flash PORT=/dev/cu.实际串口
 普通flash同样校验三个允许地址，只写启动程序、分区表和应用，保留NVS配置与离线队列，不整片擦除。不要把`first-flash`当作升级、换Wi-Fi或故障重试步骤；已有数据的板卡若需清除，必须另行确认数据保留/补传和清除目的。换Wi-Fi使用后文configure即可。
 串口找不到时先核对数据线和对应USB驱动；设备未进入下载模式时按原厂板卡说明操作，不通过清除Flash试错。
 
+## USB本机采集
+
+这条路径适合先验证传感器、接线和入库：传感器→主控→现有USB数据线→Mac→同一SQLite环境表。无需家中Wi-Fi、HTTPS域名、云服务器或设备令牌；无需另购附件。需要固件`0.3.0`，已经安装SleepScape的主控使用上面的普通升级命令，不再首次清除。
+
+连接硬件并确认实际串口后，从项目根目录运行：
+
+```sh
+.venv/bin/python -B tools/firmware.py collect \
+  --port /dev/cu.实际串口 --duration 180
+```
+
+默认先收集180秒，用于短时验收。默认设备标识`bedroom-01`、档案标识`usb-bench-030`、摆位`bench-usb`表示桌面接线调试，不能把这些数据标成正式卧室夜间观测。更换摆位时使用新档案标识与真实摆位：
+
+```sh
+.venv/bin/python -B tools/firmware.py collect \
+  --port /dev/cu.实际串口 --duration 3600 \
+  --device-id bedroom-01 --profile-id bedroom-usb-030 \
+  --placement-id bedside-fixed
+```
+
+同名档案不能悄悄修改固件版本或摆位。首次本地登记前，程序对已有数据库创建备份并恢复核验，再登记不具备HTTP认证能力的本地身份；不生成网络令牌，不打开HTTP写入口。复用现有数据目录和独立环境表，保留Garmin数据。
+
+保持Mac唤醒和USB连接。首次完整分钟需要等待，收到数据后终端显示各通道统计及质量；温湿度每10秒、光照每秒采样，声音持续采样只保留相对强度统计，均按分钟保存。没有读数时保留缺测，不填0。实际保存状态以收到的记录和提交结果为准。
+
+达到时长或按Ctrl+C时，程序尝试发送`usb_stop`并复位主控回等待命令状态，不清除Flash队列；未定稿的末尾窗口可能丢失。若停止响应未确认，程序会报告设备可能仍在采集，不能当作已停止。Mac退出或断线后设备已提交、未确认的队列仍保留，下次按相同身份启动可补收；USB断电期间不采样。
+
+时间锚点标为`host_usb`，来源为Mac时钟，误差未知；不把接收时刻直接写成采样时刻。当前boot握手不能校正其他boot的旧缓存。联网部署完成后可沿用同一采样/存储合同并切换到下文HTTPS方式，实机缓存、长期稳定性和环境看板仍需分别验收。
+
 ## 环境设备登记与HTTPS接收
 
 以下服务端命令必须在**实际负责接收上传的服务器及其数据库配置**下运行；在本机登记不会自动登记到云服务器。
-先完成上文HTTPS与域名白名单部署，保留8000仅本机监听，再在服务端私有`.env`中设置：
+先完成上文公网IP HTTPS与Host白名单部署，保留8000仅本机监听，再在服务端私有`.env`中设置：
 
 ```dotenv
 SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED=true
@@ -270,6 +316,8 @@ uv run --locked sleepscape environment-status
 `--token-file`必须是不存在的新文件，输出为JSON，包含device_id、profile_id和token，权限600、父目录700。终端只报告成功状态，不显示令牌。
 status只读本地环境接收状态，不联网、不凭空创建数据库；“已登记”不代表设备已经上传。
 
+如果把USB采集数据库迁到服务器，`bedroom-01`可能已经是仅本地登记的设备，不应再次`environment-register`或删除旧数据。先按下文登记正式摆位的新profile，再用`environment-rotate-token`为既有设备生成真实网络令牌；令牌文件留在私有目录。历史USB记录、原档案和主机时钟锚点继续保留。
+
 ## USB配置与首次上传
 
 USB操作在连接硬件的开发电脑上执行。若令牌在云端生成，通过已有加密SSH通道安全复制到本机私有目录，并核对文件600/目录700；
@@ -282,7 +330,7 @@ uv run --locked python tools/firmware.py configure \
 ```
 
 工具从注册JSON自动读取device_id/profile_id/token，只交互询问完整上传地址、2.4GHz Wi-Fi名称和隐藏密码。
-上传地址为`https://你的实际域名/api/v1/ingest/environment-batches`，不带查询参数、片段或用户名密码；Wi-Fi密码为空或8–63字节。
+上传地址为`https://你的实际公网IP/api/v1/ingest/environment-batches`，不带查询参数、片段或用户名密码；Wi-Fi密码为空或8–63字节。设备令牌与模型Key、Garmin Key互不混用。
 它通过115200 UART发送单行配置，仅收到“已写入NVS”的ACK才报告保存成功；设备随后重启，串口输出不会回显秘密。
 没有可隐藏输入的终端时会拒绝回显降级；可改用权限600、目录700的私有完整配置JSON：
 
@@ -302,7 +350,7 @@ uv run --locked python tools/firmware.py configure \
 make firmware-status PORT=/dev/cu.实际串口
 ```
 
-此时版本仍应为`0.2.0`，且`configured=true`。该布尔值只说明固件能读到有效的已保存配置，配置ACK只证明NVS写入；均不证明Wi-Fi连接、TLS或上传成功。还需在服务器`environment-status`确认新增真实记录，并检查时钟锚点与各通道覆盖/故障；
+此时版本应与实际刷入的当前固件一致，且`configured=true`。该布尔值只说明固件能读到有效的已保存配置，配置ACK只证明NVS写入；均不证明Wi-Fi连接、TLS或上传成功。还需在服务器`environment-status`确认新增真实记录，并检查时钟锚点与各通道覆盖/故障；
 当前环境曲线尚未接入看板，不能以Garmin页面能打开代替硬件端到端验收。
 确认后改接墙上电源、固定摆位。换Wi-Fi可再次USB配置，不必重刷程序。
 
@@ -358,4 +406,4 @@ uv run --locked sleepscape environment-status
 | 看板没有环境曲线 | 当前仍待环境查询与UTC映射开发，不属于刷写成功后的自动展示承诺 |
 
 普通NVS不提供抗物理读取保证；任何流程都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。
-实物阶段还须完成读数合理性、USB驱动、8小时并发采样、48小时离线补传和随机掉电测试，核验报告将区分主机通过与实物通过。
+当前电脑到主控的USB通信、首次刷写与状态检查已通过；实物阶段还须完成配置、读数合理性、8小时并发采样、48小时离线补传和随机掉电测试，核验报告区分主机通过与实物通过。

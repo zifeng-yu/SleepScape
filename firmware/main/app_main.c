@@ -16,10 +16,14 @@
 #include "sc_aggregate.h"
 #include "sc_board.h"
 #include "sc_config.h"
+#include "sc_local.h"
 #include "sc_network.h"
 #include "sc_queue.h"
 #include "sc_reject.h"
 #include "sc_wire.h"
+#include "sc_usb.h"
+#include "esp_system.h"
+#include "driver/uart.h"
 
 /* PCM exists only in the DMA buffers and audio task stack. Never queue PCM. */
 typedef enum { MSG_SOUND, MSG_SENSOR, MSG_ANCHOR } message_type_t;
@@ -43,11 +47,29 @@ static bool storage_ok;
 static atomic_uint observation_drops;
 static uint32_t quarantined_records;
 static bool quarantine_healthy = true;
+typedef enum { MODE_IDLE, MODE_CLOUD, MODE_USB_STARTING, MODE_USB, MODE_FAILED } collection_mode_t;
+static atomic_int collection_mode = MODE_IDLE;
+static sc_source_t current_source;
+static sc_usb_transfer_t usb_transfer;
+static bool board_initialized;
+static bool cloud_configured;
 static uint64_t monotonic_ms(void) { return (uint64_t)esp_timer_get_time() / 1000; }
+
+const char *sc_collection_mode(void) {
+    switch (atomic_load(&collection_mode)) {
+    case MODE_CLOUD: return "cloud";
+    case MODE_USB_STARTING: return "starting";
+    case MODE_USB: return "usb";
+    case MODE_FAILED: return "failed";
+    default: return "idle";
+    }
+}
 
 static void fail(const char *code) {
     /* Codes only: no credentials, payloads or audio. USB provisioning stays alive. */
-    printf("{\"status\":\"error\",\"code\":\"%s\"}\n", code);
+    char line[160];
+    snprintf(line, sizeof(line), "{\"status\":\"error\",\"code\":\"%s\"}", code);
+    sc_usb_print_line(line);
 }
 static bool mount_storage(void) {
     esp_vfs_spiffs_conf_t fs = {.base_path = "/spiffs", .partition_label = "storage",
@@ -90,11 +112,15 @@ static void emit_minute(void *unused, const sc_minute_t *minute) {
             .dropped_anchors = journal.dropped[2], .queued_records = journal.queued_records,
             .corrupt_records = journal.corrupt_records, .quarantined_records = quarantined_records};
         append_record(SC_RECORD_STATUS, bytes, sc_status_encode(&status, bytes, sizeof(bytes)));
-        printf("{\"status\":\"collecting\",\"queued_records\":%"PRIu32
+        if (atomic_load(&collection_mode) == MODE_CLOUD) {
+          char line[320];
+          snprintf(line, sizeof(line), "{\"status\":\"collecting\",\"queued_records\":%"PRIu32
                ",\"heap_min_bytes\":%u,\"audio_dma_overflows\":%"PRIu32
-               ",\"observation_drops\":%"PRIu32"}\n", journal.queued_records,
+               ",\"observation_drops\":%"PRIu32"}", journal.queued_records,
             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
             sc_board_audio_overflows(), (uint32_t)atomic_load(&observation_drops));
+          sc_usb_print_line(line);
+        }
     }
     xSemaphoreGive(journal_lock);
 }
@@ -261,35 +287,125 @@ static void upload_task(void *unused) {
         }
     }
 }
-void app_main(void) {
-    if (sc_config_init() != ESP_OK) { fail("configuration_storage_unavailable"); return; }
-    if (xTaskCreate(sc_config_uart_task, "provision", 6144, NULL, 2, NULL) != pdPASS) {
-        fail("provision_task_unavailable"); return;
-    }
-    if (!sc_config_load(&config)) {
-        puts("{\"status\":\"needs_configuration\"}"); return;
-    }
+static const char *start_collection(void) {
     observations = xQueueCreate(96, sizeof(observation_t));
     journal_lock = xSemaphoreCreateMutex();
-    if (!observations || !journal_lock) { fail("memory_unavailable"); return; }
-    if (!mount_storage()) { fail("storage_needs_attention_no_automatic_erase"); return; }
-    sc_source_t source = {0};
-    boot_uuid(source.boot_id);
-    strcpy(source.device_id, config.device_id);
-    strcpy(source.measurement_profile_id, config.profile_id);
-    storage_ok = sc_queue_open(&journal, "/spiffs/queue", &source, 1024 * 1024);
-    if (!storage_ok) { fail("journal_recovery_failed"); return; }
+    if (!observations || !journal_lock) return "memory_unavailable";
+    if (!mount_storage()) return "storage_needs_attention_no_automatic_erase";
+    boot_uuid(current_source.boot_id);
+    strcpy(current_source.device_id, config.device_id);
+    strcpy(current_source.measurement_profile_id, config.profile_id);
+    storage_ok = sc_queue_open(&journal, "/spiffs/queue", &current_source, 1024 * 1024);
+    if (!storage_ok) return "journal_recovery_failed";
     if (!sc_reject_count("/spiffs/rejected", &quarantined_records)) {
         quarantine_healthy = false;
         fail("quarantine_integrity_needs_attention");
     }
-    if (sc_board_init() != ESP_OK) fail("sensor_initialization_degraded");
+    board_initialized = sc_board_init() == ESP_OK;
+    if (!board_initialized && atomic_load(&collection_mode) == MODE_CLOUD)
+        fail("sensor_initialization_degraded");
     sc_aggregate_init(&aggregate, monotonic_ms(), emit_minute, NULL);
-    if (xTaskCreate(collect_task, "aggregate", 8192, NULL, 4, NULL) != pdPASS ||
-        xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 12, NULL, 1) != pdPASS ||
-        xTaskCreate(sensor_task, "sensors", 3072, NULL, 5, NULL) != pdPASS) {
-        fail("collection_task_unavailable"); return;
+    TaskHandle_t aggregate_handle = NULL, audio_handle = NULL, sensors_handle = NULL;
+    if (xTaskCreate(collect_task, "aggregate", 8192, NULL, 4, &aggregate_handle) != pdPASS ||
+        xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 12, &audio_handle, 1) != pdPASS ||
+        xTaskCreate(sensor_task, "sensors", 3072, NULL, 5, &sensors_handle) != pdPASS) {
+        if (sensors_handle) vTaskDelete(sensors_handle);
+        if (audio_handle) vTaskDelete(audio_handle);
+        if (aggregate_handle) vTaskDelete(aggregate_handle);
+        return "collection_task_unavailable";
     }
+    return NULL;
+}
+static void usb_started(void) {
+    char line[512];
+    snprintf(line, sizeof(line), "{\"status\":\"usb_started\",\"firmware_version\":\"%s\","
+        "\"device_id\":\"%s\",\"profile_id\":\"%s\",\"boot_id\":\"%s\","
+        "\"monotonic_ms\":%" PRIu64 ",\"board_initialized\":%s}", SC_FIRMWARE_VERSION,
+        current_source.device_id, current_source.measurement_profile_id,
+        current_source.boot_id, monotonic_ms(), board_initialized ? "true" : "false");
+    sc_usb_print_line(line);
+}
+bool sc_local_command(const cJSON *json) {
+    const cJSON *command = cJSON_GetObjectItemCaseSensitive(json, "command");
+    if (!cJSON_IsString(command) || strncmp(command->valuestring, "usb_", 4)) return false;
+    int mode = atomic_load(&collection_mode);
+    if (!strcmp(command->valuestring, "usb_stop") && cJSON_GetArraySize(json) == 1) {
+        if (cloud_configured) { fail("usb_requires_unconfigured_idle_device"); return true; }
+        /* Also recover an idle/failed local start or a lost start reply. Never
+         * erase queued records or accept a USB stop for a configured cloud node. */
+        sc_usb_print_line("{\"status\":\"usb_stopped\"}");
+        uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+    }
+    if (!strcmp(command->valuestring, "usb_start")) {
+        const cJSON *device = cJSON_GetObjectItemCaseSensitive(json, "device_id");
+        const cJSON *profile = cJSON_GetObjectItemCaseSensitive(json, "profile_id");
+        if (cJSON_GetArraySize(json) != 3 || !cJSON_IsString(device) || !cJSON_IsString(profile) ||
+            !sc_usb_identifier(device->valuestring) || !sc_usb_identifier(profile->valuestring)) {
+            fail("invalid_usb_identity"); return true;
+        }
+        if (mode == MODE_USB) {
+            if (strcmp(device->valuestring, current_source.device_id) ||
+                strcmp(profile->valuestring, current_source.measurement_profile_id))
+                fail("usb_identity_change_requires_restart");
+            else usb_started();
+            return true;
+        }
+        if (mode != MODE_IDLE) { fail("usb_requires_unconfigured_idle_device"); return true; }
+        atomic_store(&collection_mode, MODE_USB_STARTING);
+        strcpy(config.device_id, device->valuestring);
+        strcpy(config.profile_id, profile->valuestring);
+        const char *error = start_collection();
+        if (error) { atomic_store(&collection_mode, MODE_FAILED); fail(error); return true; }
+        atomic_store(&collection_mode, MODE_USB);
+        usb_started(); return true;
+    }
+    if (mode != MODE_USB) { fail("usb_collection_not_started"); return true; }
+    if (!strcmp(command->valuestring, "usb_poll") && cJSON_GetArraySize(json) == 1) {
+        xSemaphoreTake(journal_lock, portMAX_DELAY);
+        const char *error = sc_usb_prepare(&usb_transfer, &journal, current_source.device_id);
+        xSemaphoreGive(journal_lock);
+        if (error) fail(error);
+        else if (usb_transfer.line) sc_usb_print_line(usb_transfer.line);
+        else {
+            char line[160];
+            snprintf(line, sizeof(line), "{\"status\":\"usb_idle\",\"boot_id\":\"%s\","
+                "\"monotonic_ms\":%" PRIu64 "}", current_source.boot_id, monotonic_ms());
+            sc_usb_print_line(line);
+        }
+        return true;
+    }
+    if (!strcmp(command->valuestring, "usb_ack") && cJSON_GetArraySize(json) == 3) {
+        const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "batch_id");
+        const cJSON *ack = cJSON_GetObjectItemCaseSensitive(json, "ack");
+        if (!cJSON_IsString(id)) { fail("invalid_usb_ack"); return true; }
+        xSemaphoreTake(journal_lock, portMAX_DELAY);
+        const char *error = sc_usb_acknowledge(&usb_transfer, &journal, id->valuestring, ack);
+        xSemaphoreGive(journal_lock);
+        if (error) fail(error);
+        else {
+            char line[160];
+            snprintf(line, sizeof(line), "{\"status\":\"usb_acked\",\"batch_id\":\"%s\"}",
+                id->valuestring);
+            sc_usb_print_line(line);
+        }
+        return true;
+    }
+    fail("invalid_usb_command"); return true;
+}
+void app_main(void) {
+    if (sc_config_init() != ESP_OK) { fail("configuration_storage_unavailable"); return; }
+    bool configured = sc_config_load(&config);
+    cloud_configured = configured;
+    atomic_store(&collection_mode, configured ? MODE_CLOUD : MODE_IDLE);
+    /* USB startup and bounded JSON batch encoding run on this task too. */
+    if (xTaskCreate(sc_config_uart_task, "provision", 10240, NULL, 2, NULL) != pdPASS) {
+        fail("provision_task_unavailable"); return;
+    }
+    if (!configured) { sc_usb_print_line("{\"status\":\"needs_configuration\"}"); return; }
+    const char *error = start_collection();
+    if (error) { atomic_store(&collection_mode, MODE_FAILED); fail(error); return; }
     if (sc_network_init(&config, time_synced) != ESP_OK) {
         fail("network_initialization_failed"); return;
     }

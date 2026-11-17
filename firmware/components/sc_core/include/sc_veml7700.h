@@ -4,7 +4,7 @@
 
 /* The immutable profile pins Vishay 84286 Rev 1.8 and 84323, 2025-03-06.
  * Older DFRobot examples use a different conversion; do not mix those values. */
-#define SC_FIRMWARE_VERSION "0.2.0"
+#define SC_FIRMWARE_VERSION "0.3.0"
 #define SC_LIGHT_SENSOR_MODEL "dfrobot-sen0228-veml7700"
 #define SC_LIGHT_REFERENCE "vishay-84286-rev1.8-84323-20250306"
 #define SC_SENSOR_HUB_MODEL "dfrobot-dfr0759"

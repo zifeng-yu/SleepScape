@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SleepScape sleep analysis contract",
+  "description": "Design contract. Validate request with #/$defs/input and model answer with #/$defs/output. Semantic gates are defined in data-contract.md.",
+  "$defs": {
+    "evidenceIds": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "pattern": "^(F|T|E)[0-9]{3}$"}},
+    "fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "metric", "value", "unit", "source", "period", "quality", "valid_n", "expected_n"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^F[0-9]{3}$"},
+        "metric": {"type": "string", "pattern": "^[a-z][a-z0-9_.]{1,79}$"},
+        "value": {"type": ["number", "null"]},
+        "unit": {"enum": ["min", "bpm", "ms", "points", "load_units", "degC", "percent", "lx", "dBFS", "count"]},
+        "source": {"enum": ["garmin", "environment", "derived"]},
+        "period": {"enum": ["night", "previous_day", "baseline30", "comparison"]},
+        "quality": {"enum": ["valid", "unavailable"]},
+        "valid_n": {"type": ["integer", "null"], "minimum": 0},
+        "expected_n": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "timelineBin": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "start_at", "end_at", "profile_segment", "temperature_c", "humidity_pct", "illuminance_lux", "sound_dbfs", "valid_minutes", "expected_minutes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^T[0-9]{3}$"},
+        "start_at": {"type": "string", "format": "date-time"},
+        "end_at": {"type": "string", "format": "date-time"},
+        "profile_segment": {"type": "string", "pattern": "^segment-[0-9]+$"},
+        "temperature_c": {"type": "number"},
+        "humidity_pct": {"type": "number", "minimum": 0, "maximum": 100},
+        "illuminance_lux": {"type": "number", "minimum": 0},
+        "sound_dbfs": {"type": "number", "maximum": 0},
+        "valid_minutes": {"type": "integer", "minimum": 1},
+        "expected_minutes": {"type": "integer", "minimum": 1}
+      }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "start_at", "end_at", "profile_segment", "active_seconds", "max_1s_rms_dbfs", "merged", "incomplete"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^E[0-9]{3}$"},
+        "start_at": {"type": "string", "format": "date-time"},
+        "end_at": {"type": "string", "format": "date-time"},
+        "profile_segment": {"type": "string", "pattern": "^segment-[0-9]+$"},
+        "active_seconds": {"type": "number", "minimum": 0},
+        "max_1s_rms_dbfs": {"type": "number", "maximum": 0},
+        "merged": {"type": "boolean"},
+        "incomplete": {"type": "boolean"}
+      }
+    },
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "synthetic", "night_date", "timezone", "input_hash", "data_cutoff_at", "is_provisional", "readiness", "sleep_window", "completeness", "facts", "timeline", "events", "event_status", "required_limitations"],
+      "properties": {
+        "schema_version": {"const": "sleep-input-1"},
+        "synthetic": {"type": "boolean"},
+        "night_date": {"type": "string", "format": "date"},
+        "timezone": {"const": "Asia/Shanghai"},
+        "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "data_cutoff_at": {"type": "string", "format": "date-time"},
+        "is_provisional": {"type": "boolean"},
+        "readiness": {"const": "ready"},
+        "sleep_window": {
+          "type": "object", "additionalProperties": false, "required": ["start_at", "end_at"],
+          "properties": {"start_at": {"type": "string", "format": "date-time"}, "end_at": {"type": "string", "format": "date-time"}}
+        },
+        "completeness": {
+          "type": "object", "additionalProperties": false,
+          "required": ["policy_version", "garmin_core_complete", "environment_core_complete", "environment_expected_minutes", "environment_valid_minutes", "time_quality"],
+          "properties": {
+            "policy_version": {"const": "dual-source-strict-1"},
+            "garmin_core_complete": {"const": true},
+            "environment_core_complete": {"const": true},
+            "environment_expected_minutes": {"type": "integer", "minimum": 1, "maximum": 1441},
+            "environment_valid_minutes": {"type": "integer", "minimum": 1, "maximum": 1441},
+            "time_quality": {"enum": ["anchored", "estimated"]}
+          }
+        },
+        "facts": {"type": "array", "minItems": 9, "maxItems": 128, "items": {"$ref": "#/$defs/fact"}},
+        "timeline": {"type": "array", "maxItems": 96, "items": {"$ref": "#/$defs/timelineBin"}},
+        "events": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/event"}},
+        "event_status": {"enum": ["available", "none_detected", "unavailable", "context_truncated"]},
+        "required_limitations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,79}$"}}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "text", "evidence_ids", "evidence_level"],
+      "properties": {
+        "category": {"enum": ["sleep", "body_signals", "previous_day", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"},
+        "evidence_level": {"enum": ["limited", "moderate"]}
+      }
+    },
+    "hypothesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factor", "text", "evidence_ids", "evidence_level", "alternatives"],
+      "properties": {
+        "factor": {"enum": ["temperature", "humidity", "light", "sound", "training_load", "stress", "sleep_schedule"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"},
+        "evidence_level": {"const": "limited"},
+        "alternatives": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "minLength": 1, "maxLength": 180}}
+      }
+    },
+    "action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "observe", "evidence_ids"],
+      "properties": {
+        "kind": {"enum": ["record", "observe", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 220},
+        "observe": {"type": "string", "minLength": 1, "maxLength": 180},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"}
+      }
+    },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "night_date", "input_hash", "status", "summary", "observations", "hypotheses", "actions", "limitations"],
+      "properties": {
+        "schema_version": {"const": "sleep-output-1"},
+        "night_date": {"type": "string", "format": "date"},
+        "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "status": {"enum": ["complete", "insufficient_input"]},
+        "summary": {
+          "type": "object", "additionalProperties": false, "required": ["text", "evidence_ids"],
+          "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 300}, "evidence_ids": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "pattern": "^(F|T|E)[0-9]{3}$"}}}
+        },
+        "observations": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/claim"}},
+        "hypotheses": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/hypothesis"}},
+        "actions": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/action"}},
+        "limitations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,79}$"}}
+      }
+    }
+  }
+}

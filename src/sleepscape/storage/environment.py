@@ -201,6 +201,68 @@ def add_profile(
     _secure(data_dir)
 
 
+def local_registration_required(
+    data_dir: Path, device_id: str, profile_id: str, profile: MeasurementProfile
+) -> bool:
+    """Read-only local registration check; never repurpose HTTP or revoked identities."""
+    if status(data_dir)["state"] == "not_initialized":
+        return True
+    with closing(_connect(data_dir)) as connection:
+        device = connection.execute(
+            "SELECT token_hash, enabled FROM environment_devices WHERE device_id=?", (device_id,)
+        ).fetchone()
+        if device is None:
+            return True
+        if device[0] != f"local-only:{device_id}" or device[1] != 1:
+            raise EnvironmentError("usb_device_identity_not_local", 409)
+        row = connection.execute(
+            "SELECT content_hash FROM environment_profiles WHERE device_id=? AND profile_id=?",
+            (device_id, profile_id),
+        ).fetchone()
+        if row is None:
+            return True
+        if row[0] != content_hash(profile.model_dump(mode="json", exclude_none=True)):
+            raise EnvironmentError("profile_conflict", 409)
+        return False
+
+
+def register_local(
+    data_dir: Path, device_id: str, profile_id: str, profile: MeasurementProfile
+) -> None:
+    """Explicit trusted-USB registration without generating an HTTP bearer credential.
+
+    The sentinel is unique per device and can never equal a SHA-256 token digest.
+    Future explicit token rotation can enable HTTP authentication without moving facts.
+    """
+    initialize(data_dir)
+    payload = profile.model_dump(mode="json", exclude_none=True)
+    with closing(_connect(data_dir, writable=True)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT token_hash, enabled FROM environment_devices WHERE device_id=?", (device_id,)
+        ).fetchone()
+        if row is None:
+            now = _now()
+            connection.execute(
+                "INSERT INTO environment_devices VALUES (?, ?, 1, ?, ?)",
+                (device_id, f"local-only:{device_id}", now, now),
+            )
+        elif row[0] != f"local-only:{device_id}" or row[1] != 1:
+            raise EnvironmentError("usb_device_identity_not_local", 409)
+        existing = connection.execute(
+            "SELECT content_hash FROM environment_profiles WHERE device_id=? AND profile_id=?",
+            (device_id, profile_id),
+        ).fetchone()
+        if existing and existing[0] != content_hash(payload):
+            raise EnvironmentError("profile_conflict", 409)
+        if existing is None:
+            connection.execute(
+                "INSERT INTO environment_profiles VALUES (?, ?, ?, ?, ?)",
+                (device_id, profile_id, canonical_json(payload), content_hash(payload), _now()),
+            )
+    _secure(data_dir)
+
+
 def revoke(data_dir: Path, device_id: str) -> None:
     with closing(_connect(data_dir, writable=True)) as connection, connection:
         result = connection.execute(

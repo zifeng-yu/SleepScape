@@ -1,5 +1,7 @@
 #include "sc_config.h"
 #include "sc_veml7700.h"
+#include "sc_local.h"
+#include "sc_usb.h"
 #include <stdio.h>
 #include <string.h>
 #include "cJSON.h"
@@ -74,20 +76,24 @@ bool sc_config_load(sc_config_t *config) {
     return valid_config(config);
 }
 static void process_line(const char *line) {
-    cJSON *json = cJSON_Parse(line);
+    cJSON *json = sc_usb_parse_command(line);
     const cJSON *command = cJSON_GetObjectItemCaseSensitive(json, "command");
     if (!cJSON_IsObject(json) || !cJSON_IsString(command)) {
-        puts("{\"status\":\"error\",\"code\":\"invalid_json\"}");
+        sc_usb_print_line("{\"status\":\"error\",\"code\":\"invalid_json\"}");
         cJSON_Delete(json); return;
     }
     if (!strcmp(command->valuestring, "status")) {
         sc_config_t config;
         bool configured = sc_config_load(&config);
         memset(&config, 0, sizeof(config));
-        printf("{\"status\":\"ready\",\"configured\":%s,\"firmware_version\":\"%s\"}\n",
-               configured ? "true" : "false", SC_FIRMWARE_VERSION);
+        char response[192];
+        snprintf(response, sizeof(response), "{\"status\":\"ready\",\"configured\":%s,"
+            "\"firmware_version\":\"%s\",\"collection_mode\":\"%s\"}",
+            configured ? "true" : "false", SC_FIRMWARE_VERSION, sc_collection_mode());
+        sc_usb_print_line(response);
         cJSON_Delete(json); return;
     }
+    if (sc_local_command(json)) { cJSON_Delete(json); return; }
     sc_config_t config = {0};
     bool valid = !strcmp(command->valuestring, "configure") &&
         text_field(json, "device_id", config.device_id, sizeof(config.device_id)) &&
@@ -100,7 +106,7 @@ static void process_line(const char *line) {
     cJSON_Delete(json);
     if (!valid) {
         memset(&config, 0, sizeof(config));
-        puts("{\"status\":\"error\",\"code\":\"invalid_configuration\"}"); return;
+        sc_usb_print_line("{\"status\":\"error\",\"code\":\"invalid_configuration\"}"); return;
     }
     nvs_handle_t handle;
     esp_err_t result = nvs_open("sleepscape", NVS_READWRITE, &handle);
@@ -111,22 +117,22 @@ static void process_line(const char *line) {
     }
     memset(&config, 0, sizeof(config));
     if (result != ESP_OK) {
-        puts("{\"status\":\"error\",\"code\":\"configuration_write_failed\"}"); return;
+        sc_usb_print_line("{\"status\":\"error\",\"code\":\"configuration_write_failed\"}"); return;
     }
-    puts("{\"status\":\"configured\"}"); fflush(stdout);
+    sc_usb_print_line("{\"status\":\"configured\"}");
     uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(1000));
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_restart();
 }
 void sc_config_uart_task(void *unused) {
     (void)unused;
-    char line[2048]; size_t used = 0; bool overflow = false;
+    char line[SC_USB_COMMAND_BYTES]; size_t used = 0; bool overflow = false;
     for (;;) {
         uint8_t byte;
         if (uart_read_bytes(UART_NUM_0, &byte, 1, pdMS_TO_TICKS(100)) != 1) continue;
         if (byte == '\n') {
             line[used] = 0;
-            if (overflow) puts("{\"status\":\"error\",\"code\":\"configuration_too_large\"}");
+            if (overflow) sc_usb_print_line("{\"status\":\"error\",\"code\":\"configuration_too_large\"}");
             else if (used) process_line(line);
             memset(line, 0, sizeof(line)); used = 0; overflow = false;
         } else if (byte != '\r') {

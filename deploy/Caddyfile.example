@@ -1,4 +1,7 @@
-# Replace the example hostname with your domain before use.
+# Generic site example, not a completed public-IP certificate configuration.
+# SleepScape now selects public IP + HTTPS. Before deployment, configure a
+# supported IP ACME issuer/profile or an externally renewed IP certificate.
+# Do not merely substitute an IP and assume Caddy's local certificate is trusted.
 # In /opt/sleepscape/.env configure:
 # SLEEPSCAPE_WEB_AUTH_FILE=.secrets/dashboard-auth.json
 # SLEEPSCAPE_WEB_ALLOWED_HOSTS=["sleep.example.com"]

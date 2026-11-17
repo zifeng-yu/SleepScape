@@ -1,8 +1,8 @@
 # 数据契约与展示口径
 
-状态：当前Garmin采集/展示与环境接收合同；环境查询映射标明为待实现。更新于2026-11-11。
+状态：当前Garmin采集/展示与环境接收合同；环境查询及LLM合同标为待实现。更新于2026-11-17。
 中国区多日采集已完成；最新独立对账和完整验收结果见 [核验报告](verification.md)。
-看板与API已在本地实现；云部署、环境硬件尚未验收，以下环境条款是后续接入约束。
+Garmin看板、接收API与USB短采已有核验；云端、环境曲线、长期采集和LLM仍待完成，不能把合同视为运行程序。
 
 ## 当前数据范围
 
@@ -165,7 +165,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 
 ## 环境采集合同
 
-本节是固件、写入API与独立环境存储已实现的共同合同，设备入口默认关闭；**未用真机验收**。UTC查询映射与环境看板呈现仍按本节约定后续实现。严格机器校验在`domain/environment.py`，可重放合成信封见`tests/fixtures/environment-batch.json`。
+本节是固件、USB本地接收、写入API与独立环境存储的共同合同，HTTP设备入口默认关闭；各路径的实现和实机验收状态以[核验报告](verification.md)为准。UTC查询映射与环境看板呈现仍按本节约定后续实现。严格机器校验在`domain/environment.py`，可重放合成信封见`tests/fixtures/environment-batch.json`。
 合同按测量能力定义，不绑定某一硬件型号；当前测量配置示例为M5 Atom Voice（C008-C）、Gravity AHT20（SEN0528）、VEML7700（SEN0228）及被动分线模块DFR0759。两传感器使用同一条3.3V I²C总线，SDA21/SCL25、100kHz。
 只启用温度、相对湿度、光照、相对声音；首版没有CO₂或VOC推算CO₂通道。替换型号必须登记新测量配置并验证对应驱动。
 采购、接线和资源可行性见[硬件方案](plans/hardware.md)。本节维护字段与口径，不重复采购步骤。
@@ -175,7 +175,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 环境观测、时间锚点、测量配置、写入审计分别保存，使用独立环境表；不写入、覆盖或重新解释Garmin事实表。
 后续查询将以UTC关联两类来源；本轮只保存原始单调时间和校时锚点，未在当前页面生成环境曲线。睡眠归属日期仍采用已有Garmin规则。
 
-- `device_id`是登记后的设备标识，由设备令牌绑定；客户端不能用一个设备令牌替别的设备写入。
+- `device_id`是登记后的设备标识。HTTPS请求由设备令牌绑定，客户端不能用一个设备令牌替别的设备写入；USB本地采集由明确选定的串口及会话标识绑定，不要求网络令牌。
 - `boot_id`每次启动生成新的随机标识，断电后不能复用。单调时钟只在同一`boot_id`内有效。
 - 记录身份为`(device_id, boot_id, record_type, seq)`；`seq`为该启动周期、该记录类型下递增且不复用的非负整数，最大`2^53-1`，不能倒退或复用。
 - `measurement_profile_id`引用不可变测量配置：硬件型号/修订、传感器通道与单位、固件版本、采样与聚合策略、PDM转换/滤波、固定增益、事件算法/阈值、摆放位置与校准信息。配置必须先登记；未登记配置不进入正常展示。
@@ -184,7 +184,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 
 ### 上传信封和认证
 
-唯一设备写入口为`POST /api/v1/ingest/environment-batches`，JSON请求使用`Content-Type: application/json`。
+唯一设备HTTP写入口为`POST /api/v1/ingest/environment-batches`，JSON请求使用`Content-Type: application/json`。USB本地路径通过本机程序调用同一校验和存储，不开放新的网络写入口。
 `schema_version=1`是JSON整数，独立于当前只读API的字符串`contract_version="1"`。请求允许补传和乱序，不以到达顺序作为采集顺序。
 
 | 信封字段 | 约束 |
@@ -204,16 +204,30 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 全局GET/HEAD限制已**仅对上述精确路径的POST窄化**，不能对整个`/api`目录放行写方法；尾斜杠、相似前缀和其他路径不成为旁路。
 现有UI、静态资源和只读API继续按原访问规则运行，不开放跨域。
 
+### USB本地传输
+
+USB和HTTPS复用同一`EnvironmentBatch`及逐记录ACK合同、原始记录身份、质量标记和SQLite环境表；不生成另一套临时采样格式。USB只传环境统计值，绝不传PCM录音或Garmin数据。
+
+- `usb_start`显式指定`device_id`和`profile_id`，启动无需网络凭据的RAM会话；同一身份重复启动幂等，不在同一启动周期切换身份。与联网上传任务互斥，避免两个消费者同时推进队列。
+- `usb_poll`有界读取同设备、同启动周期、同测量配置的最多4条已提交队列记录；响应携带`batch_id`及完整信封。未确认批次可重读。
+- 主机严格校验信封、身份、档案和类型后，以现有SQLite事务提交；提交成功后才发送`usb_ack`，携带相同`batch_id`和逐记录ACK。失败、中断或格式错误不确认、不删除设备队列；重读已保存记录走原有幂等逻辑。
+- 主机的时间锚点另存、另确认，不能混入设备批次ACK；当前启动时钟不能用来解释队列里其他`boot_id`的旧记录。
+- `usb_stop`用于结束本地会话并复位回等待配置状态，保留已提交Flash队列；尚在RAM内的未定稿窗口可能丢失，不伪造完整末分钟。拔线断电也无法继续采集。
+- 本机登记保留不可变测量配置。仅USB设备的`token_hash`使用`local-only:`前缀哨兵，与HTTP认证计算的SHA-256值不可能匹配；不生成、传入或保存网络令牌，不启用HTTP写入口，也不能借本地登记重新启用已撤销设备。后续联网时显式轮换/生成真实设备令牌。
+
+串口连接存在不代表采集正在运行，采集程序存在不代表已有完整分钟；须分别核对启动、收到的通道计数、数据库提交及设备ACK。运行时Mac需保持唤醒和USB连接，不能把这条路径写成已实现无人值守云端采集。
+
 ### 单调窗口、时间锚点与UTC映射
 
 每条记录保存`measurement_profile_id`、`seq`、`record_type`、`mono_start_ms`、`mono_end_ms`和`quality`。
 时间是从本次启动开始的单调毫秒数，使用64位整数并限制在JSON安全整数范围；窗口为左闭右开，结束必须晚于开始。
 当前固件按启动单调时间的整分钟边界分桶，窗口长60,000 ms；首次不足一分钟仍保存该整分钟窗口，并通过通道计数和质量标记缺测，不补零。校时不重新分桶。USB改配置会重启并生成新boot_id；正在RAM中尚未定稿的窗口不保证掉电恢复。协议也允许带partial_window的短窗口，但不能将此能力写成当前固件已抢救未落盘尾段。
-`received_at`由服务器记录为上传接收UTC，绝不代替采集时间。
+`received_at`由接收端记录为数据入库UTC，绝不代替采集时间。
 
 时间锚点包含`anchor_id`、`monotonic_ms`、`utc_at`、`source`、`uncertainty_ms`和质量代码：
 
-- `utc_at`明确带`Z`，`source`记录实际校时来源，例如`ntp`；`uncertainty_ms`是非负误差估计，没有可靠估计时为null，不能填0伪装精确。
+- `utc_at`明确带`Z`，`source`只接受实际来源`ntp`或`host_usb`；`uncertainty_ms`是非负误差估计，没有可靠估计时为null，不能填0伪装精确。
+- `host_usb`由Mac与当前启动周期串口握手关联，不称为设备NTP校时；主机时钟准确度未经独立验证，误差保持null，后续查询只能按估计时间使用。仅接收到旧批次不能为其旧启动周期新增当前时钟锚点。
 - 锚点身份为`(device_id, boot_id, anchor_id)`，内容不可变；校时得到新结果时追加新锚点，不修改原记录或旧锚点。
 - 后续只读查询映射应返回`utc_start/utc_end`、`time_quality`、`time_uncertainty_ms`、所用锚点ID和`time_mapping_version`。`time_quality`区分`synced`、`estimated`、`unknown`、`conflict`；未经校时的原始记录无需编造UTC。
 - 同一启动周期内可根据锚点与单调差值估计UTC；离锚点越远，须考虑已验证的时钟漂移。未验证漂移时误差保持未知并标`estimated`，不声称秒级精确。
@@ -252,9 +266,9 @@ PCM只在短RAM缓冲中用于聚合，不写Flash、不上传、不输出串口
 
 ### 当前光照测量配置
 
-当前SEN0228档案使用`light_sensor="dfrobot-sen0228-veml7700"`及固件版本`0.2.0`。唯一可复制样例为
+当前SEN0228档案使用`light_sensor="dfrobot-sen0228-veml7700"`及固件版本`0.3.0`。唯一可复制样例为
 [`firmware/profile.example.json`](../firmware/profile.example.json)，新增的`light_measurement`和`i2c_bus`随不可变档案保存。
-当前组合的完整编译、原生驱动逻辑与接收回归状态以[核验报告](verification.md)为准，尚未验证实物电气和读数。
+当前组合的完整编译、原生驱动逻辑、接收回归和实物读数验证状态以[核验报告](verification.md)为准；短时可读不代表已完成校准或整夜稳定性验收。
 
 | 配置 | 当前值与含义 |
 | --- | --- |
@@ -279,7 +293,7 @@ DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参�
 代价是较强室内光/白天可能超量程；需要更宽量程时另定配置和驱动规则并重新验证，不回写已有观测。
 
 上传`schema_version=1`及环境SQLite事实表保持不变。旧测量档案缺少上述两对象时继续保留原样和原哈希，不补写伪造的参数；
-新注册的VEML7700档案必须包含完整两对象。已知C008-C固件0.2.0会严格核对表中固定参数，不能登记另一套虽数学自洽却不符刷入程序的增益、量程或总线参数。接收端按已登记档案验证有效光照范围及低光标记一致性；历史无光照配置对象的记录不套用新阈值，缓存中已写入的质量标记不被新固件追溯重算。
+新注册的VEML7700档案必须包含完整两对象。当前C008-C固件0.3.0对应的档案严格核对表中固定参数，历史0.2.0档案保留相同核对规则；不能登记另一套虽数学自洽却不符刷入程序的增益、量程或总线参数。接收端按已登记档案验证有效光照范围及低光标记一致性；历史无光照配置对象的记录不套用新阈值，缓存中已写入的质量标记不被新固件追溯重算。
 更换硬件、光照档位或摆位必须使用新的`measurement_profile_id`；旧档案和已采数据属于历史证据，不能作为旧版程序清理。
 
 ### 相对声音事件（工程默认，待真机验证）
@@ -324,7 +338,56 @@ DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参�
 - 入睡前运动、活动和压力与睡后数据分开，不能把结果发生后的数据当原因。
 - 晨起评分、Body Battery等综合指标可能包含同夜睡眠/HRV，不能作为独立原因。
 - 声音或亮灯可能发生在醒来之后，时间重合不证明环境导致觉醒。
-- 主观恢复感、咖啡因、酒精等生活记录仍有帮助，第一版不输出因果结论。
+- 主观恢复感、咖啡因、酒精等生活记录仍有帮助；新增LLM解读按下节双源门槛执行，不输出确定因果结论。
 - 环境设备未校时记录不得冒充准确时间，补传保留采集时刻和校时状态。
 - 未校准声音指标不标为准确dBA，不用于判断是否符合专业噪声标准。
 - 原始响应与标准化一致只证明程序转换一致，不证明手表测量或睡眠判断准确。
+
+## 睡眠分析合同（待实现）
+
+2026-11-17用户确认：双源核心齐全才首次调用LLM、缺项在看板显示、每日09:00按配置范围补取、每晚最多一份成功报告。本节与[JSON合同](contracts/sleep-analysis.schema.json)定义新功能，不代表运行程序已实现。
+
+### 双源完整性门槛
+
+策略版本`dual-source-strict-1`。先确定睡眠来源日D及API已闭合的主睡眠窗口`[start,end)`；必须`start < end <= 快照截止时刻`且不长于24小时，睡眠时长有效、没有尚在进行标记或未解决的核心数据冲突。仅日期为今天/is_provisional不能判缺失；也不能由HTTP200推断睡眠已结束。
+
+| 组 | 必需输入 | 不满足时 |
+| --- | --- | --- |
+| Garmin睡眠 | 来源日、开始/结束、总睡眠时长、睡眠平均心率、夜间平均HRV | `missing_garmin_core`，列具体字段和来源请求状态；不拿日均/静息心率代替 |
+| 昨日背景 | D−1完整日的运动负荷和平均压力 | `missing_previous_day`；负荷0必须有完整活动分页与日摘要佐证，无法确认不能补0 |
+| 环境时间 | 每个相关boot存在可用锚点、同boot映射无冲突，配置/摆位能确定 | `unknown_environment_time`或`time_conflict`；不能借别的boot或接收时间映射 |
+| 环境覆盖 | 覆盖整个睡眠窗口的分钟记录齐全；温度、湿度、光照、声音四通道每个相关窗口都有效 | `missing_environment_minutes`/`invalid_channel`，列通道、缺失区间与数量 |
+
+严格默认要求：选取与睡眠窗口有交集的真实分钟窗口，按boot网格和已确认摆位计算应有窗口并去重；其并集必须覆盖睡眠窗口，整条分钟缺失也计缺口。窗口内各通道`valid_count=expected_count>0`、没有无效读数/缺样/超量程；声音还须完整秒数与预期一致、无DMA丢样或削波。首尾按真实窗口交集算覆盖时长，统计值仍说明来自整分钟，不能声称仅对交集秒数重算了平均值。**不默认采用95%覆盖作为“齐全”，不悄悄放宽门槛。**
+
+这比硬件连续采样“音频覆盖≥99%”的工程验收目标严格：硬件可以通过稳定性检查，但某晚仍因小缺口不生成报告。迟到数据可补传；真正未采到、无时间锚点且无法恢复的数据不会自动变齐全。看板保留其观测和缺项，过回查窗口标未分析。若将来需要容忍缺口，必须另行明确完整性策略，而非为产报告伪造数据。
+
+有一致锚点但绝对误差未知可以标`estimated`参与整夜统计，同时必须加入`clock_error_unknown`，不得输出秒级因果或严格事件先后。这表示时间可映射，不表示已校准精度。首版LLM要求整晚同一选定设备、测量配置和摆位；跨配置/摆位或未选定重叠来源时以`configuration_changed`阻塞，避免混合不可比dBFS。看板仍可分段展示这些数据，不能为了分析合成全夜声音均值。
+
+可选项：阶段累计/评分、呼吸、SpO2、Body Battery、详细活动时间、个人历史基线、声音事件摘要和生活记录。缺失逐项显示为`optional_unavailable`，不阻塞核心齐全；没有阶段区间等“不支持”与“尚未同步”分开。事件检测暖机/覆盖不足不能写成0次事件。若某个必需字段长期不可用，保持阻塞并明确报告原因，不自动从必需项移除。
+
+缺项合同：`code/source/metric/date/window_start/window_end/expected/observed/recoverability/last_checked_at`；恢复性取`await_sync/await_upload/unrecoverable/unknown`。服务状态和缺项由程序计算，不让LLM判断自己是否有足够输入。Garmin核心请求最近尝试失败且只剩陈旧旧值时不通过；可选资源失败仅影响对应模块。
+
+### 状态与发布
+
+数据状态：`waiting_data / ready / expired_unanalyzed`；执行状态：`not_configured / queued / running / failed / blocked_budget / blocked_attempts / blocked_input_budget / complete`；报告额外标记`source_changed`。两类状态分开，缺Key不能掩盖缺数据，已存报告不能被失败尝试清空。
+
+每晚按单用户`night_date`唯一发布，不引入每日自动报告修订。`analysis_inputs`保留快照；`analysis_attempts`允许失败重试；`sleep_analysis_reports`只在第一次成功、输入仍一致且未已有报告时插入。模型返回`insufficient_input`是拒绝/失败，不是成功报告。生成中事实变化为`discarded_input_changed`，保留尝试、候选不展示；发布后数据变化仅更新源数据和source_changed。
+
+### 输入、指纹与输出校验
+
+发送用JSON只在ready后构造；必需事实metric为`睡眠总时长/平均心率/夜间HRV/前日负荷/前日压力/四项环境均值`，对应机器名见[合成样例](contracts/sleep-analysis.example.json)。睡眠窗口另列；累计阶段等可选事实不得被Schema最小项数强制要求。每个指标的source/unit/period要由固定注册表校验，不能仅凭字段类型认可。
+
+F类事实、T类分段、E类事件ID在快照内唯一；外发只给匿名配置段标识，不给设备ID。可选环境分段仅由通过门槛的记录构造，保留有效/预期分钟数；可选事件最多取8个有效摘要（优先峰值、并列按时间，最终按时间排列），遗漏时`event_status=context_truncated`并加入限制，空数组不能默认解释为没有声音事件。`none_detected`只在事件检测覆盖完整且确实没有事件时允许。
+
+输入最多24KiB UTF-8 JSON（紧凑序列化），事实最多128、分段最多96、事件最多8；这些是总预算内的各项上限，不能同时塞满再忽视字节限额。输出最多8条观察、3条假设、3条建议；不用大模型计算基础差值/覆盖率。完整Schema为设计权威来源，实施时移入包内并让文档引用同一份，禁止手工维护两套不一致结构。
+
+`input_hash=sha256(规范JSON)`：从发送对象移除`input_hash`、`data_cutoff_at`及随当前日期变化的展示标记`is_provisional`，规范化为`ensure_ascii=false, sort_keys=true, separators=(",",":"), allow_nan=false`的UTF-8；快照保留这些审计字段但不让单纯过午夜触发source_changed。完整性/结构版本仍参与hash。模型配置/Prompt/映射版本通过私有输入记录另存并参与发布时一致性核对。改变观察/质量/来源日必须改变hash，单纯再次读取的时间不改变hash。哈希用于一致性，不能绕过night唯一报告。
+
+另存仅供程序核验的`source_fingerprint`，**不发送给模型**，即使当前缺项而不能构造ready输入也必须能计算。它采用相同规范JSON/SHA-256算法，输入为稳定排序的私有来源对象：来源日与睡眠窗口、选定设备/不可变配置/摆位身份、报告所用白名单事实及基线的值/单位/来源/质量、映射后时间、核心完整性和规范缺项列表。缺项中排除last_checked_at，身份、缺失和无效用明确值表示；不纳入接收/读取时间、请求ID、重抓次数、原始响应无关字段、Prompt/模型配置、is_provisional或不影响映射结果的内部版本号。
+
+发布前重新检查ready并同时比较`input_hash`、`source_fingerprint`及私有配置版本；生成中变成缺项/无效或换了来源，即使汇总数值相同，也废弃候选。发布后用当前来源指纹与报告保存值比较，变成缺项也标source_changed并列原因，仍保留报告。Prompt或模型升级本身不标来源变化；时间索引单纯重建而映射结果相同也不标。来源指纹用于保真，不能把设备身份外发或授权自动修订报告。
+
+Schema之外还须检查：night/hash相同、必需metric齐全且数值非空、ID唯一、valid≤expected、核心环境窗口数相等、时间先后/窗口边界、所有引用确实存在、required_limitations全部保留。完整报告summary必须至少一个有效引用，observations覆盖sleep/body_signals/previous_day/environment四类；拒绝对象观察/假设/建议必须为空。禁止未引用数值、改单位、把null当0和未知变量当不存在；自然语言语义仍需人工抽查，不能声称Schema自动保证推断正确。
+
+统计、摘要及查询都复用同一领域函数，避免看板与模型看到不同分母。基线的valid_n/expected_n按每个baseline事实记录，不能用一个全局夜数掩盖不同指标缺失。背景/基线规则见[LLM方案](plans/llm.md)，训练负荷仍复用本契约既有定义。

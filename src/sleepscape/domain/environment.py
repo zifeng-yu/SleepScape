@@ -227,7 +227,7 @@ class TimeAnchor(Contract):
     utc_at: Annotated[
         str, StringConstraints(pattern=r"^20\d\d-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z$")
     ]
-    source: Literal["ntp"]
+    source: Literal["ntp", "host_usb"]
     uncertainty_ms: Number | None
     quality: Quality = Field(default_factory=list)
 
@@ -419,7 +419,7 @@ class MeasurementProfile(Contract):
 
     @model_validator(mode="after")
     def explicit_sensor_configuration(self):
-        if self.hardware_model == "m5stack-c008-c" and self.firmware_version == "0.2.0":
+        if self.hardware_model == "m5stack-c008-c" and self.firmware_version in {"0.2.0", "0.3.0"}:
             if (
                 self.light_sensor != "dfrobot-sen0228-veml7700"
                 or self.temperature_sensor != "dfrobot-sen0528-aht20"
