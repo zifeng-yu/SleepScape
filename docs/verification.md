@@ -31,7 +31,9 @@ Forerunner 265中国区真实数据已进入API；浏览器交互用隔离合成
 | 提交范围 | 仅Git可见源码、文档、模板及合成回归；不读取或提交忽略的密钥、健康数据库、日志和私人报告 |
 | 文档核对 | 135处本地文件引用可达；合成合同输入/输出hash一致，git diff --check通过；旧当前状态与重复叙述已合并 |
 
-本轮未重新拉取Garmin或调用模型，未操作USB设备、配置Wi-Fi或部署云服务。当前代码远程结果须核对本次提交的GitHub Actions，不沿用早期提交的CI结果。
+代码提交`02f2ebf0b3fbfe5d569c1f84b0303875d8c03f2d`已推送至origin/main；[GitHub Actions #44042785807](https://github.com/zifeng-yu/SleepScape/actions/runs/44042785807)的check与firmware任务均成功，覆盖干净Linux下的Python、浏览器、固定工具链安装、目标固件编译及C/Python协议检查。随后仅将远程结果同步到本报告；文档提交按仓库规则不重复运行CI。
+
+本轮未重新拉取Garmin或调用模型，未操作USB设备、配置Wi-Fi或部署云服务。工作区清理及本地/远程提交一致性在推送后复核；私有配置、真实数据和凭据均未进入提交。
 
 ## 非云端补齐方案核验（2026-11-17）
 
