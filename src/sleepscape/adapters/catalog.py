@@ -123,3 +123,19 @@ def build_sync_plan(today: date, detail_days: int = 7, history_days: int = 38) -
         requests.append(range_request(resource, detail_start, today))
     requests.extend(r for r in historical if r.resource not in PROVISIONAL_RESOURCES)
     return requests
+
+
+def build_daily_plan(today: date, lookback_days: int) -> list[DataRequest]:
+    """Strict sleep/HRV window, separate 30-day load baselines for every included night."""
+    plan = build_sync_plan(today, lookback_days, lookback_days + 30)
+    first = today - timedelta(days=lookback_days - 1)
+    result = []
+    for request in plan:
+        if request.resource in {"sleep_summaries", "hrv_summaries"}:
+            start = max(first, date.fromisoformat(request.start_date))
+            end = date.fromisoformat(request.end_date)
+            if start <= end:
+                result.append(range_request(request.resource, start, end))
+        else:
+            result.append(request)
+    return result

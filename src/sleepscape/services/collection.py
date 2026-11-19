@@ -1,10 +1,8 @@
 """Bounded collection, pagination, and atomic current-data replacement."""
 
-import fcntl
 import hashlib
 import json
-import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -14,12 +12,28 @@ from sleepscape.adapters.garmin import GarminError, GarminGateway
 from sleepscape.config import Settings
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
 from sleepscape.domain.normalize import normalize
+from sleepscape.storage.daily_runtime import (
+    DailyRuntimeError,
+    collection_mutex,
+    cooldown,
+    defer_until,
+)
 from sleepscape.storage.reader import StorageReadError, completed_run_plans
 from sleepscape.storage.repository import Repository
+from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 
 class CollectionError(Exception):
-    pass
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def _write_capacity(data_dir):
+    try:
+        require_capacity(data_dir, "write")
+    except CapacityError as exc:
+        raise CollectionError(exc.code) from None
 
 
 def prepare_sync(
@@ -86,23 +100,18 @@ def prepare_sync(
 
 @contextmanager
 def collection_lock(data_dir: Path):
-    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    data_dir.chmod(0o700)
-    descriptor = os.open(data_dir / ".collection.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise CollectionError("collection_already_running") from None
-        yield
-    finally:
-        os.close(descriptor)
+        with collection_mutex(data_dir):
+            yield
+    except DailyRuntimeError as exc:
+        raise CollectionError(exc.code) from None
 
 
 def collect_activities(gateway, repository: Repository, run_id: str, request: DataRequest):
     pages, signatures, activity_ids = [], set(), set()
     limit = int(request.params["limit"])
     for page_index in range(50):
+        _write_capacity(repository.data_dir)
         params = {**request.params, "start": page_index * limit}
         page_request = replace(
             request,
@@ -113,6 +122,7 @@ def collect_activities(gateway, repository: Repository, run_id: str, request: Da
         result = gateway.fetch(page_request)
         payload = result.payload
         valid = isinstance(payload, list)
+        _write_capacity(repository.data_dir)
         repository.save_snapshot(
             run_id,
             result,
@@ -148,10 +158,17 @@ def collect_activities(gateway, repository: Repository, run_id: str, request: Da
 
 
 def _check_deferred(repository: Repository):
+    try:
+        deadline = cooldown(repository.data_dir)
+    except DailyRuntimeError as exc:
+        raise CollectionError(exc.code) from None
+    if deadline and deadline > datetime.now(UTC):
+        raise CollectionError("retry_after_wait_still_active")
     last = repository.latest_run()
     summary = last.get("summary") if last else None
     value = summary.get("retry_not_before") if summary else None
     if value and datetime.fromisoformat(value) > datetime.now(UTC):
+        defer_until(repository.data_dir, value)
         raise CollectionError("retry_after_wait_still_active")
 
 
@@ -165,6 +182,8 @@ def collect(
     gateway=None,
     plan: list[DataRequest] | None = None,
     metadata: dict | None = None,
+    _lock_held: bool = False,
+    on_start=None,
 ):
     plan = build_plan(end, detail_days, history_days) if plan is None else plan
     metadata = {
@@ -178,7 +197,9 @@ def collect(
         "resources": sorted({request.resource for request in plan}),
         "planned_requests": len(plan),
     }
-    with collection_lock(settings.data_dir), Repository(settings.data_dir) as repository:
+    _write_capacity(settings.data_dir)
+    lock = nullcontext() if _lock_held else collection_lock(settings.data_dir)
+    with lock, Repository(settings.data_dir) as repository:
         _check_deferred(repository)
         run_id = repository.start_run(metadata)
         initial_snapshots = repository.counts()["raw_snapshots"]
@@ -192,9 +213,12 @@ def collect(
         }
         own_gateway = gateway is None
         try:
+            if on_start:
+                on_start(run_id)
             if gateway is None:
                 gateway = GarminGateway(settings)
             for request in plan:
+                _write_capacity(settings.data_dir)
                 try:
                     result = (
                         collect_activities(gateway, repository, run_id, request)
@@ -228,6 +252,7 @@ def collect(
                             "provisional" if provisional_dates else "completed_day"
                         )
                         batch.metrics["complete_day_through"] = metadata["complete_day_through"]
+                    _write_capacity(settings.data_dir)
                     stored = repository.save_snapshot(run_id, result, batch)
                     summary["new_snapshots"] += int(stored["new_snapshot"])
                     summary["completed_resources"] += 1
@@ -252,6 +277,7 @@ def collect(
                         summary["retry_not_before"] = (
                             datetime.now(UTC) + timedelta(seconds=exc.retry_after_seconds)
                         ).isoformat()
+                        defer_until(settings.data_dir, summary["retry_not_before"])
                     if (
                         exc.http_status in {401, 403, 429}
                         or exc.code.startswith(("authentication_", "credential_"))
@@ -269,16 +295,21 @@ def collect(
         except KeyboardInterrupt:
             summary["status"] = "interrupted"
             raise
-        except Exception:
+        except Exception as exc:
             summary["status"] = "failed"
-            summary["stop_reason"] = "local_collection_error"
-            raise CollectionError("local_collection_error") from None
+            code = "storage_capacity_critical" if is_disk_full(exc) else "local_collection_error"
+            summary["stop_reason"] = code
+            raise CollectionError(code) from None
         finally:
             summary["new_snapshots"] = repository.counts()["raw_snapshots"] - initial_snapshots
             session = getattr(gateway, "session", None)
             summary["http_requests"] = getattr(session, "request_count", None)
             if own_gateway and gateway is not None:
-                gateway.close()
+                try:
+                    gateway.close()
+                except Exception:
+                    # Resource cleanup must not erase the durable outcome of finished requests.
+                    summary["cleanup_error"] = "gateway_close_failed"
             repository.finish_run(run_id, summary["status"], summary)
         summary["database_counts"] = repository.counts()
         summary["integrity"] = repository.integrity_check()

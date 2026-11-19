@@ -1,0 +1,7 @@
+# Optional host-wide journald drop-in for a dedicated 20GB server.
+# Review impact on ALL services before installing; never auto-install globally.
+[Journal]
+SystemMaxUse=256M
+SystemKeepFree=2G
+RuntimeMaxUse=64M
+MaxRetentionSec=14day

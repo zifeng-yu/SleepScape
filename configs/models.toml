@@ -1,0 +1,12 @@
+# Model identity and public request limits only. URL and Key stay in private configuration.
+schema_version = 1
+
+[models.sleep_analyst]
+provider = "openai_compatible"
+model = "qwen3.8-max"
+accepted_models = ["qwen3.8-max"]
+timeout_seconds = 180
+max_completion_tokens = 4096
+enable_thinking = false
+schema_profile = "aliyun-compatible-1"
+response_mode = "json_object"

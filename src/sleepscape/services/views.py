@@ -7,10 +7,19 @@ from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sleepscape.config import Settings
+from sleepscape.domain.analysis_readiness import POLICY_VERSION
+from sleepscape.domain.dashboard_dates import require_visible_night, visible_start
 from sleepscape.domain.downsample import minmax_downsample
+from sleepscape.domain.metrics import metric_definition
 from sleepscape.domain.training_load import load_comparison
+from sleepscape.services.daily import daily_status
+from sleepscape.services.environment_dashboard import environment_status, environment_timeline
+from sleepscape.services.maintenance import maintenance_status
+from sleepscape.services.model_health import model_status
+from sleepscape.storage.analysis import AnalysisStorageError, read_bulk
 from sleepscape.storage.reader import SUCCESS, DashboardReader, validate_dates, validate_window
 from sleepscape.storage.reports import read_private_json
+from sleepscape.storage.sleep_analysis import SleepAnalysisStorageError, read_report_summaries
 
 RESOURCE_LABELS = {
     "sleep": "睡眠详情",
@@ -71,10 +80,10 @@ _SOURCE_FIELDS = {
     "unmeasurable_seconds": "unmeasurableSleepSeconds",
 }
 _SERIES = {
-    "heart_rate_sample": ("heart_rate", "心率", "bpm", "bpm", 60),
-    "hrv_sample": ("hrv", "HRV", "ms", "hrv_ms", 150),
-    "spo2_sample": ("spo2", "血氧", "%", "percent", 120),
-    "body_battery_sample": ("body_battery", "身体电量", "points", "level", 150),
+    "heart_rate_sample": ("heart_rate", "bpm", 60),
+    "hrv_sample": ("hrv", "hrv_ms", 150),
+    "spo2_sample": ("spo2", "percent", 120),
+    "body_battery_sample": ("body_battery", "level", 150),
 }
 
 
@@ -213,8 +222,6 @@ class _Context:
                 else (state, "latest_request_failed")
             )
             quality = sorted(set(quality + ["latest_request_failed"]))
-        elif day >= self.today.isoformat():
-            state, reason = "pending", "current_day_provisional"
         return _metric(
             value,
             unit,
@@ -254,11 +261,13 @@ class _Context:
                     stale = stale or self.stale("daily_summaries", value)
                 else:
                     reason = "daily_summary_missing"
+        if total is not None and day >= self.today:
+            # A complete page response is an observation, not a completed calendar day.
+            # Keep its known sum below without treating it as a full-day comparison input.
+            total, reason = None, "activity_day_not_finished"
         state = "available" if total is not None else "missing"
         if total is not None and stale:
             state, reason = "stale", "latest_request_failed"
-        elif day >= self.today:
-            state, reason = "pending", "current_day_provisional"
         fetched = max((row["fetched_at"] for row in rows), default=None)
         result = _metric(
             total,
@@ -293,8 +302,6 @@ def _comparison(context, day):
         state, reason = "unavailable", "baseline_zero"
     if any(item["state"] == "stale" for item in [current, *baseline]):
         state, reason = "stale", "latest_request_failed"
-    elif any(item["state"] == "pending" for item in [current, *baseline]):
-        state, reason = "pending", "current_day_provisional"
     return current, {
         **{
             key: comparison[key]
@@ -436,8 +443,6 @@ class DashboardService:
             or comparison["state"] == "stale"
         ):
             quality.append("latest_request_failed")
-        if day >= context.today:
-            quality.append("current_day_provisional")
         stages = []
         for stage, label in (
             ("deep", "深睡"),
@@ -463,7 +468,9 @@ class DashboardService:
         ]
         return {
             "date": value,
-            "is_provisional": day >= context.today,
+            # Retained for response compatibility; dates do not establish source finality.
+            "is_provisional": False,
+            "garmin_sleep_available": sleep is not None,
             "sleep": {
                 "start_at": _iso(start) if start else None,
                 "end_at": _iso(end) if end else None,
@@ -476,14 +483,84 @@ class DashboardService:
             "quality": sorted(set(quality)),
         }
 
+    def readiness_night(self, reader: DashboardReader, day: date) -> dict:
+        """Use the caller's coherent snapshot and existing Garmin metric rules."""
+        context = _Context(
+            reader, day - timedelta(days=31), day, self._now().astimezone(self.zone).date()
+        )
+        night = self._night(context, day)
+        sleep = context.select(day.isoformat(), "sleep", ("sleep", "sleep_summaries"))
+        data = sleep["data"] if sleep else {}
+        night["sleep"]["source_date"] = sleep["date"] if sleep else None
+        night["sleep"]["quality"] = _quality(sleep)
+        # Only an actual normalized source marker may signal ongoing sleep.
+        night["sleep"]["in_progress"] = data.get("in_progress")
+        previous = (day - timedelta(days=1)).isoformat()
+        activity_attempt = context.success.get(("activities", previous), {})
+        availability = {
+            "previous.activities": activity_attempt.get("metrics", {}).get("pagination_complete")
+            is True
+            and not context.stale("activities", previous),
+            "sleep.spo2": False,
+            "sleep.body_battery": night["cards"]["body_battery_at_wake"]["state"] == "available",
+        }
+        facts = []
+        start, end = _time(data.get("start_at")), _time(data.get("end_at"))
+        if start and end and timedelta(0) < end - start <= timedelta(hours=24):
+            for row in reader.samples(start, end):
+                stamp = _time(row["timestamp"])
+                if stamp is None or not start <= stamp < end:
+                    continue
+                definition = {
+                    "spo2_sample": ("sleep.spo2", "percent", "percent", "spo2"),
+                    "body_battery_sample": ("sleep.body_battery", "level", "level", "body_battery"),
+                }.get(row["kind"])
+                if not definition or row["resource"] != definition[3]:
+                    continue
+                name, field, unit, _ = definition
+                item = context.metric(row, field, unit, row["date"])
+                valid = (
+                    item["state"] == "available"
+                    and _number(item["value"])
+                    and 0 <= item["value"] <= 100
+                    and (name != "sleep.spo2" or item["value"] > 0)
+                    and row["data"].get("source_plottable") is not False
+                )
+                availability[name] = availability[name] or valid
+                facts.append(
+                    {
+                        "metric": name,
+                        "timestamp": row["timestamp"],
+                        "value": item["value"],
+                        "state": item["state"],
+                        "source_date": row["date"],
+                        "quality": item["quality"],
+                        "valid": bool(valid),
+                    }
+                )
+        night["optional_availability"] = availability
+        night["optional_observations"] = facts
+        return night
+
     def night(self, day: date) -> dict | None:
+        require_visible_night(day, self.settings.dashboard_start_date)
         with DashboardReader(self.settings.data_dir) as reader:
             context = _Context(
                 reader, day - timedelta(days=31), day, self._now().astimezone(self.zone).date()
             )
-            if not context.by_day[day.isoformat()]:
-                return None
-            return {**self._header(reader), **self._night(context, day)}
+            result = self._night(context, day)
+            if not result["garmin_sleep_available"]:
+                start = datetime.combine(day - timedelta(days=1), time(18), self.zone)
+                end = datetime.combine(day, time(12), self.zone)
+                environment = environment_timeline(self.settings, start, end, 2)["environment"]
+                has_environment = environment["record_count"] > 0
+                if not context.by_day[day.isoformat()] and not has_environment:
+                    return None
+                result["environment_only"] = has_environment
+                result["quality"] = sorted(set(result["quality"] + ["sleep_window_unavailable"]))
+            else:
+                result["environment_only"] = False
+            return {**self._header(reader), **result}
 
     def nights(self, start: date, end: date, cursor: date | None = None, limit: int = 31) -> dict:
         validate_dates(start, end, 92)
@@ -492,14 +569,40 @@ class DashboardService:
         if cursor is not None and not start <= cursor <= end:
             raise ValueError("invalid_cursor")
         last = cursor or end
+        start = visible_start(start, self.settings.dashboard_start_date)
         days = [last - timedelta(days=i) for i in range(min(limit, (last - start).days + 1))]
         with DashboardReader(self.settings.data_dir) as reader:
+            if not days:
+                return {
+                    **self._header(reader),
+                    "items": [],
+                    "next_cursor": None,
+                    "available_dates": [],
+                }
             context = _Context(
                 reader,
                 min(days) - timedelta(days=31),
                 last,
                 self._now().astimezone(self.zone).date(),
             )
+            try:
+                checked = read_bulk(
+                    self.settings.data_dir,
+                    [day.isoformat() for day in days],
+                    connection=reader.connection,
+                )
+                readiness_error = False
+            except AnalysisStorageError:
+                checked, readiness_error = {}, True
+            try:
+                reports = read_report_summaries(
+                    self.settings.data_dir,
+                    [day.isoformat() for day in days],
+                    connection=reader.connection,
+                )
+                report_error = False
+            except SleepAnalysisStorageError:
+                reports, report_error = {}, True
             items = []
             for day in days:
                 night = self._night(context, day)
@@ -529,6 +632,32 @@ class DashboardService:
                         },
                         "change_percent": change,
                         "quality": night["quality"],
+                        "report_summary": reports.get(
+                            day.isoformat(),
+                            {
+                                "state": "unavailable" if report_error else "not_generated",
+                                "generated_at": None,
+                            },
+                        ),
+                        "analysis_summary": {
+                            "state": checked[day.isoformat()]["data_state"]
+                            if day.isoformat() in checked
+                            else "not_evaluated",
+                            "checked_at": checked[day.isoformat()]["checked_at"]
+                            if day.isoformat() in checked
+                            else None,
+                            "scope": "last_saved_check",
+                            "quality_state": checked.get(day.isoformat(), {}).get("quality_state"),
+                            "policy_version": checked.get(day.isoformat(), {}).get(
+                                "policy_version"
+                            ),
+                            "current_policy": (
+                                checked[day.isoformat()]["policy_version"] == POLICY_VERSION
+                                if day.isoformat() in checked
+                                else None
+                            ),
+                            "unavailable": readiness_error,
+                        },
                     }
                 )
             next_day = min(days) - timedelta(days=1)
@@ -546,17 +675,17 @@ class DashboardService:
         end: datetime | None = None,
         max_points: int = 2000,
     ) -> dict | None:
+        require_visible_night(day, self.settings.dashboard_start_date)
         if isinstance(max_points, bool) or not 2 <= max_points <= 2000:
             raise ValueError("invalid_max_points")
         if any(value is not None and value.tzinfo is None for value in (start, end)):
             raise ValueError("timezone_required")
         if start is not None and end is not None:
             validate_window(start, end)
+        explicit_window = start is not None and end is not None
         with DashboardReader(self.settings.data_dir) as reader:
             today = self._now().astimezone(self.zone).date()
             context = _Context(reader, day - timedelta(days=1), day, today)
-            if not context.by_day[day.isoformat()]:
-                return None
             sleep = context.select(day.isoformat(), "sleep", ("sleep", "sleep_summaries"))
             data = sleep["data"] if sleep else {}
             begin, finish = _time(data.get("start_at")), _time(data.get("end_at"))
@@ -569,6 +698,13 @@ class DashboardService:
                 quality.append("sleep_window_unavailable")
             start, end = start or default_start, end or default_end
             validate_window(start, end)
+            environment = environment_timeline(self.settings, start, end, max_points)
+            if (
+                not context.by_day[day.isoformat()]
+                and not environment["environment"]["record_count"]
+                and not explicit_window
+            ):
+                return None
             samples, events = reader.samples(start, end), reader.events(start, end)
             partitions = [
                 date.fromisoformat(row["date"]) for row in [*samples, *events] if _date(row["date"])
@@ -588,7 +724,9 @@ class DashboardService:
                         grouped[(row["kind"], series_type)].append(row)
             series = []
             for (kind, series_type), rows in sorted(grouped.items()):
-                metric, label, unit, field, tolerance = _SERIES[kind]
+                metric, field, tolerance = _SERIES[kind]
+                definition = metric_definition(metric)
+                label, unit = definition["label"], definition["unit"]
                 points, stale = [], False
                 for row in rows:
                     item = context.metric(row, field, unit, row["date"])
@@ -608,8 +746,6 @@ class DashboardService:
                 state = "available" if reduced["points"] else "missing"
                 if stale:
                     state = "stale"
-                elif day >= today:
-                    state = "pending"
                 series.append(
                     {
                         "id": f"{metric}:{series_type}",
@@ -617,6 +753,7 @@ class DashboardService:
                         "label": label
                         + ("（小时均值）" if series_type == "hourly_average" else ""),
                         "unit": unit,
+                        "source": "garmin",
                         "series_type": series_type,
                         "aggregation_window_seconds": 3600
                         if series_type == "hourly_average"
@@ -628,18 +765,20 @@ class DashboardService:
                         **reduced,
                     }
                 )
-            for metric, label, unit, _, tolerance in _SERIES.values():
+            for metric, _, tolerance in _SERIES.values():
                 if not any(item["metric"] == metric for item in series):
+                    definition = metric_definition(metric)
                     series.append(
                         {
                             "id": f"{metric}:native",
                             "metric": metric,
-                            "label": label,
-                            "unit": unit,
+                            "label": definition["label"],
+                            "unit": definition["unit"],
+                            "source": "garmin",
                             "series_type": "native",
                             "aggregation_window_seconds": None,
                             "hover_tolerance_seconds": tolerance,
-                            "state": "pending" if day >= today else "missing",
+                            "state": "missing",
                             "points": [],
                             "display_resolution": {
                                 "method": "none",
@@ -689,14 +828,22 @@ class DashboardService:
                     "default_start": _iso(default_start),
                     "default_end": _iso(default_end),
                 },
-                "series": series,
-                "events": list(chosen_events.values()),
+                "series": series + environment["series"],
+                "events": list(chosen_events.values()) + environment["events"],
+                "environment": environment["environment"],
                 "stages": intervals,
             }
 
     def status(self) -> dict:
+        environment = environment_status(self.settings, self._now())
+        time_state = environment.get("global_time_state") or {}
+        has_environment = environment["state"] == "available" and (
+            time_state.get("current_index_record_count") or 0
+        ) > (time_state.get("unknown_record_count") or 0) + (
+            time_state.get("conflict_record_count") or 0
+        )
         with DashboardReader(self.settings.data_dir) as reader:
-            info = reader.status()
+            info = reader.status(start_date=self.settings.dashboard_start_date)
             last_success = _time(info["data_as_of"])
             stale = last_success is None or self._now() - last_success > timedelta(hours=36)
             quality = ["collection_not_recent"] if stale else []
@@ -764,8 +911,10 @@ class DashboardService:
                 {
                     "key": "environment",
                     "label": "卧室环境",
-                    "available": False,
-                    "note": "hardware_not_connected",
+                    "available": has_environment,
+                    "note": "stored_environment_observations"
+                    if has_environment
+                    else environment["state"],
                 },
             ]
             if has_sleep:
@@ -779,6 +928,9 @@ class DashboardService:
                     capabilities[1]["note"] = "stored_source_intervals"
             return {
                 **self._header(reader, quality),
+                "dashboard_start_date": self.settings.dashboard_start_date.isoformat()
+                if self.settings.dashboard_start_date is not None
+                else None,
                 "latest_night": info["latest_night"],
                 "earliest_night": info["earliest_night"],
                 "latest_success_at": info["data_as_of"],
@@ -797,4 +949,16 @@ class DashboardService:
                 "resources": resources,
                 "capabilities": capabilities,
                 "backup": self._backup_status(),
+                "model": model_status(self.settings),
+                "daily": daily_status(self.settings, now=self._now()),
+                "maintenance": maintenance_status(self.settings, now=self._now()),
+                "environment": environment,
+                "latest_environment_capture": max(
+                    (
+                        device["last_mapped_capture"]["utc_end"]
+                        for device in environment["devices"]
+                        if device.get("last_mapped_capture")
+                    ),
+                    default=None,
+                ),
             }

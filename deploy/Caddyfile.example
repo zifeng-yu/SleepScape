@@ -1,14 +1,33 @@
-# Generic site example, not a completed public-IP certificate configuration.
-# SleepScape now selects public IP + HTTPS. Before deployment, configure a
-# supported IP ACME issuer/profile or an externally renewed IP certificate.
-# Do not merely substitute an IP and assume Caddy's local certificate is trusted.
-# In /opt/sleepscape/.env configure:
-# SLEEPSCAPE_WEB_AUTH_FILE=.secrets/dashboard-auth.json
-# SLEEPSCAPE_WEB_ALLOWED_HOSTS=["sleep.example.com"]
-# Create the hash interactively with: .venv/bin/sleepscape web-password
-# Authentication is enforced by SleepScape. Preserve Authorization (the default).
-# Never serve the repository, data/, .env or .secrets/ as a static directory.
-sleep.example.com {
-    encode zstd gzip
-    reverse_proxy 127.0.0.1:8000
+# Install as /etc/caddy-sleepscape/Caddyfile with caddy-sleepscape.service.
+# Verified target version: Caddy 2.11.9. Set the actual fixed public IPv4 in
+# /etc/caddy-sleepscape/site.env: SLEEPSCAPE_PUBLIC_IP=198.51.100.10
+# The address above is documentation-only. site.env contains no application keys.
+# Configure the same actual IP in SleepScape's WEB_ALLOWED_HOSTS and configure
+# its independent dashboard password before publishing the service.
+# Explicit ACME + shortlived requests a publicly trusted IP certificate; do not
+# substitute tls internal or static certificate paths. Caddy renews certificates
+# automatically and replaces them in memory without an external reload hook.
+{
+	admin unix//run/caddy-sleepscape/admin.sock
+	default_sni {$SLEEPSCAPE_PUBLIC_IP}
+	storage file_system {
+		root /var/lib/caddy-sleepscape
+	}
 }
+
+https://{$SLEEPSCAPE_PUBLIC_IP} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+	encode zstd gzip
+	# Authentication is enforced by SleepScape. Keep Authorization unchanged.
+	reverse_proxy 127.0.0.1:8000
+}
+
+# Access logging is deliberately disabled (no site log directive).
+# Never serve the repository, data/, .env or .secrets/ as a static directory.
+# HSTS is omitted: browsers do not record IP literals as HSTS hosts, and this
+# server also hosts an independent service on another port.

@@ -225,7 +225,7 @@ def test_complete_empty_activity_day_requires_daily_summary_for_zero(service):
     assert load["value"] is None and load["reason"] == "daily_summary_missing"
 
 
-def test_sleep_source_precedence_fallback_null_and_current_day_pending(service):
+def test_sleep_source_precedence_fallback_and_missing_value_survive_current_day(service):
     seed(service)
     with Repository(service.settings.data_dir) as repository:
         run = repository.start_run({})
@@ -250,9 +250,110 @@ def test_sleep_source_precedence_fallback_null_and_current_day_pending(service):
     assert service.night(DAY)["cards"]["average_heart_rate"]["state"] == "missing"
     service._now = lambda: datetime(2026, 2, 1, 2, tzinfo=UTC)
     night = service.night(DAY)
-    assert night["is_provisional"] is True
-    assert night["cards"]["sleep_seconds"]["state"] == "pending"
-    assert night["cards"]["average_heart_rate"]["state"] == "pending"
+    assert night["is_provisional"] is False
+    assert night["cards"]["sleep_seconds"]["state"] == "available"
+    assert night["cards"]["average_heart_rate"]["state"] == "missing"
+    assert "current_day_provisional" not in night["quality"]
+
+
+def test_observed_cards_and_history_do_not_change_state_at_midnight(service):
+    seed(service)
+    service._now = lambda: datetime(2026, 2, 1, 15, 59, tzinfo=UTC)
+    before = service.night(DAY)
+    history_before = service.nights(DAY, DAY)["items"]
+    assert all(
+        before["cards"][key]["state"] == "available"
+        for key in ("sleep_seconds", "average_heart_rate", "night_average_hrv", "training_load")
+    )
+    assert not before["is_provisional"]
+    assert "current_day_provisional" not in before["quality"]
+    service._now = lambda: datetime(2026, 2, 1, 16, 1, tzinfo=UTC)
+    after = service.night(DAY)
+    assert before["cards"] == after["cards"]
+    assert before["stages"] == after["stages"]
+    assert before["quality"] == after["quality"]
+    assert history_before == service.nights(DAY, DAY)["items"]
+
+
+def test_current_day_invalid_and_failed_source_states_remain_explicit(service):
+    seed(service)
+    service._now = lambda: datetime(2026, 2, 1, 2, tzinfo=UTC)
+    with Repository(service.settings.data_dir) as repository:
+        run = repository.start_run({})
+        save(
+            repository,
+            run,
+            "sleep",
+            [sleep_row(average_heart_rate=None, quality={"average_heart_rate": "invalid_number"})],
+            DAY.isoformat(),
+        )
+        repository.record_failure(
+            run,
+            DataRequest(
+                "hrv", "latest-failed", "/synthetic", start_date=str(DAY), end_date=str(DAY)
+            ),
+            "http_error",
+            500,
+        )
+        repository.finish_run(run, "partial", {})
+    cards = service.night(DAY)["cards"]
+    assert cards["sleep_seconds"]["state"] == "available"
+    assert cards["average_heart_rate"]["state"] == "invalid"
+    assert cards["average_heart_rate"]["value"] is None
+    assert cards["night_average_hrv"]["state"] == "stale"
+    assert cards["night_average_hrv"]["value"] == 40
+    assert cards["night_average_hrv"]["reason"] == "latest_request_failed"
+
+
+def test_current_night_timeline_distinguishes_observed_and_absent_samples(service):
+    seed(service)
+    service._now = lambda: datetime(2026, 2, 1, 2, tzinfo=UTC)
+    with Repository(service.settings.data_dir) as repository:
+        run = repository.start_run({})
+        save(
+            repository,
+            run,
+            "heart_rate",
+            [row("heart_rate_sample", str(DAY), {"bpm": 62}, "measured", "2026-01-31T16:01:00Z")],
+            str(DAY),
+        )
+        repository.finish_run(run, "completed", {})
+    series = {item["metric"]: item for item in service.timeline(DAY)["series"]}
+    assert series["heart_rate"]["state"] == "available"
+    assert series["heart_rate"]["points"][0]["value"] == 62
+    for key in ("hrv", "spo2", "body_battery"):
+        assert series[key]["state"] == "missing"
+        assert series[key]["points"] == []
+
+
+@pytest.mark.parametrize("pagination_complete", [False, True])
+def test_unfinished_activity_day_never_becomes_a_complete_load_or_zero(
+    service, pagination_complete
+):
+    seed(service)
+    service._now = lambda: datetime(2026, 2, 1, 2, tzinfo=UTC)
+    with Repository(service.settings.data_dir) as repository:
+        run = repository.start_run({})
+        save(
+            repository,
+            run,
+            "activities",
+            [row("activity", str(DAY), {"training_load": 25}, "current-activity")],
+            str(DAY),
+            metrics={"pagination_complete": pagination_complete},
+        )
+        repository.finish_run(run, "completed", {})
+    # A future sleep-date history row would otherwise use today's partial activity day.
+    future = service.nights(DAY + timedelta(days=1), DAY + timedelta(days=1))["items"][0]
+    load = future["training_load"]
+    assert load["value"] is None
+    assert load["state"] == "missing"
+    assert load["reason"] == (
+        "activity_day_not_finished" if pagination_complete else "activity_scope_incomplete"
+    )
+    assert load["known_load_sum"] == 25 and load["activity_count"] == 1
+    assert future["change_percent"]["value"] is None
+    assert future["change_percent"]["state"] == "missing"
 
 
 def test_timeline_joins_actual_utc_across_source_dates_and_keeps_hourly_separate(service):

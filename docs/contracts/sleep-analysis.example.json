@@ -1,40 +1,303 @@
 {
-  "description": "仅用于合同核验的合成样例；不是用户数据或真实模型报告。input_hash已按数据契约的规范JSON计算。",
+  "description": "仅用于当前可执行合同核验的自创合成样例，不是用户数据或真实模型报告。程序证据卡提供数值，报告文字解释方向与缺采限制。",
   "input": {
-    "schema_version": "sleep-input-1", "synthetic": true,
-    "night_date": "2001-01-02", "timezone": "Asia/Shanghai",
-    "input_hash": "07a45ab88f13204b55372e8fbc50404614619905d181baabc2cad56efc05fac9",
-    "data_cutoff_at": "2001-01-02T01:02:00Z", "is_provisional": true, "readiness": "ready",
-    "sleep_window": {"start_at": "2001-01-01T15:00:00Z", "end_at": "2001-01-01T22:00:00Z"},
-    "completeness": {"policy_version": "dual-source-strict-1", "garmin_core_complete": true, "environment_core_complete": true, "environment_expected_minutes": 420, "environment_valid_minutes": 420, "time_quality": "estimated"},
+    "schema_version": "sleep-input-1",
+    "synthetic": true,
+    "night_date": "2001-01-02",
+    "timezone": "Asia/Shanghai",
+    "input_hash": "685ef6c7bc6aed3bea7e3ca6baa6861d2ebfb17f904f90fa7c25731b3b50c233",
+    "data_cutoff_at": "2001-01-02T01:02:00Z",
+    "is_provisional": false,
+    "readiness": "ready",
+    "sleep_window": {
+      "start_at": "2001-01-01T15:00:00Z",
+      "end_at": "2001-01-01T22:00:00Z"
+    },
+    "completeness": {
+      "policy_version": "dual-source-coverage-1",
+      "policy": {
+        "min_channel_coverage": 0.99,
+        "max_affected_span_seconds": 300
+      },
+      "quality_state": "with_gaps",
+      "garmin_core_complete": true,
+      "environment_eligible": true,
+      "environment_expected_windows": 420,
+      "environment_observed_windows": 420,
+      "time_quality": "estimated",
+      "channels": {
+        "temperature_c": {
+          "count_unit": "sample_points",
+          "expected_windows": 420,
+          "valid_windows": 420,
+          "invalid_windows": 0,
+          "expected_count": 2520,
+          "observed_count": 2520,
+          "valid_count": 2520,
+          "usable_count": 2520,
+          "effective_coverage_ratio": 1,
+          "coverage_ratio": 1,
+          "max_affected_span_seconds": 0
+        },
+        "relative_humidity_pct": {
+          "count_unit": "sample_points",
+          "expected_windows": 420,
+          "valid_windows": 420,
+          "invalid_windows": 0,
+          "expected_count": 2520,
+          "observed_count": 2520,
+          "valid_count": 2520,
+          "usable_count": 2520,
+          "effective_coverage_ratio": 1,
+          "coverage_ratio": 1,
+          "max_affected_span_seconds": 0
+        },
+        "illuminance_lux": {
+          "count_unit": "sample_points",
+          "expected_windows": 420,
+          "valid_windows": 420,
+          "invalid_windows": 0,
+          "expected_count": 25200,
+          "observed_count": 25200,
+          "valid_count": 25200,
+          "usable_count": 25200,
+          "effective_coverage_ratio": 1,
+          "coverage_ratio": 1,
+          "max_affected_span_seconds": 0
+        },
+        "sound_relative": {
+          "count_unit": "one_second_windows",
+          "expected_windows": 420,
+          "valid_windows": 419,
+          "invalid_windows": 1,
+          "expected_count": 25200,
+          "observed_count": 25180,
+          "valid_count": 25180,
+          "usable_count": 25180,
+          "effective_coverage_ratio": 0.9992063492063492,
+          "coverage_ratio": 0.9976190476190476,
+          "max_affected_span_seconds": 60
+        }
+      },
+      "warnings": [
+        {
+          "code": "invalid_channel",
+          "source": "environment",
+          "metric": "sound_relative",
+          "window_start": "2001-01-01T17:00:00Z",
+          "window_end": "2001-01-01T17:01:00Z",
+          "expected": "complete_window",
+          "observed": "counts_incomplete",
+          "recoverability": "unrecoverable"
+        }
+      ],
+      "warning_interval_scope": "affected_minute_ranges_clipped_to_sleep"
+    },
     "facts": [
-      {"id": "F001", "metric": "sleep.total_minutes", "value": 420, "unit": "min", "source": "garmin", "period": "night", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F002", "metric": "sleep.average_heart_rate", "value": 52, "unit": "bpm", "source": "garmin", "period": "night", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F003", "metric": "sleep.night_average_hrv", "value": 42, "unit": "ms", "source": "garmin", "period": "night", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F004", "metric": "previous.training_load", "value": 0, "unit": "load_units", "source": "garmin", "period": "previous_day", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F005", "metric": "previous.average_stress", "value": 25, "unit": "points", "source": "garmin", "period": "previous_day", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F006", "metric": "sleep.awake_minutes", "value": 0, "unit": "min", "source": "garmin", "period": "night", "quality": "valid", "valid_n": null, "expected_n": null},
-      {"id": "F007", "metric": "environment.temperature_mean", "value": 20, "unit": "degC", "source": "environment", "period": "night", "quality": "valid", "valid_n": 2520, "expected_n": 2520},
-      {"id": "F008", "metric": "environment.humidity_mean", "value": 50, "unit": "percent", "source": "environment", "period": "night", "quality": "valid", "valid_n": 2520, "expected_n": 2520},
-      {"id": "F009", "metric": "environment.illuminance_mean", "value": 0.5, "unit": "lx", "source": "environment", "period": "night", "quality": "valid", "valid_n": 25200, "expected_n": 25200},
-      {"id": "F010", "metric": "environment.sound_energy_mean", "value": -55, "unit": "dBFS", "source": "environment", "period": "night", "quality": "valid", "valid_n": 25200, "expected_n": 25200}
+      {
+        "id": "F001",
+        "metric": "sleep.total_minutes",
+        "value": 420,
+        "unit": "min",
+        "source": "garmin",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F002",
+        "metric": "sleep.average_heart_rate",
+        "value": 52,
+        "unit": "bpm",
+        "source": "garmin",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F003",
+        "metric": "sleep.night_average_hrv",
+        "value": 42,
+        "unit": "ms",
+        "source": "garmin",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F004",
+        "metric": "previous.training_load",
+        "value": 0,
+        "unit": "load_units",
+        "source": "garmin",
+        "period": "previous_day",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F005",
+        "metric": "previous.average_stress",
+        "value": 25,
+        "unit": "points",
+        "source": "garmin",
+        "period": "previous_day",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F006",
+        "metric": "sleep.awake_minutes",
+        "value": 0,
+        "unit": "min",
+        "source": "garmin",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": null,
+        "expected_n": null
+      },
+      {
+        "id": "F007",
+        "metric": "environment.temperature_mean",
+        "value": 20,
+        "unit": "degC",
+        "source": "environment",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": 2520,
+        "expected_n": 2520
+      },
+      {
+        "id": "F008",
+        "metric": "environment.humidity_mean",
+        "value": 50,
+        "unit": "percent",
+        "source": "environment",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": 2520,
+        "expected_n": 2520
+      },
+      {
+        "id": "F009",
+        "metric": "environment.illuminance_mean",
+        "value": 0.5,
+        "unit": "lx",
+        "source": "environment",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": 25200,
+        "expected_n": 25200
+      },
+      {
+        "id": "F010",
+        "metric": "environment.sound_energy_mean",
+        "value": -55,
+        "unit": "dBFS",
+        "source": "environment",
+        "period": "night",
+        "quality": "valid",
+        "valid_n": 25180,
+        "expected_n": 25200
+      }
     ],
-    "timeline": [], "events": [], "event_status": "none_detected",
-    "required_limitations": ["wearable_estimates", "relative_sound_only", "no_stage_timeline", "unobserved_lifestyle", "clock_error_unknown", "baseline_insufficient"]
+    "timeline": [],
+    "events": [],
+    "event_status": "unavailable",
+    "required_limitations": [
+      "wearable_estimates",
+      "relative_sound_only",
+      "no_stage_timeline",
+      "unobserved_lifestyle",
+      "clock_error_unknown",
+      "baseline_insufficient",
+      "sampling_gaps_present",
+      "event_detection_incomplete",
+      "single_night_not_causal"
+    ]
   },
   "output": {
-    "schema_version": "sleep-output-1", "night_date": "2001-01-02",
-    "input_hash": "07a45ab88f13204b55372e8fbc50404614619905d181baabc2cad56efc05fac9",
+    "schema_version": "sleep-output-1",
+    "night_date": "2001-01-02",
+    "input_hash": "685ef6c7bc6aed3bea7e3ca6baa6861d2ebfb17f904f90fa7c25731b3b50c233",
+    "input_quality_state": "with_gaps",
     "status": "complete",
-    "summary": {"text": "本晚的睡眠与环境核心数据可供观察，个人历史基线尚不足，不能据此判断影响睡眠的主要原因。", "evidence_ids": ["F001", "F002", "F003", "F007", "F008", "F009", "F010"]},
+    "summary": {
+      "text": "手表记录了一段睡眠，窗口内没有累计到清醒时间。仅凭这项记录无法判断主观睡得好不好，现有历史也不足以比较平时的睡眠时长和身体信号。",
+      "evidence_ids": [
+        "F001",
+        "F006",
+        "F002",
+        "F003"
+      ]
+    },
     "observations": [
-      {"category": "sleep", "text": "已有本晚睡眠时长记录，历史基线不足，暂不比较平时水平。", "evidence_ids": ["F001"], "evidence_level": "limited"},
-      {"category": "body_signals", "text": "已取得夜间心率和HRV，缺少足够个人历史，暂不判断相对平时的变化。", "evidence_ids": ["F002", "F003"], "evidence_level": "limited"},
-      {"category": "previous_day", "text": "前日负荷和压力可作为背景记录，单晚记录不足以判断它们对睡眠的影响。", "evidence_ids": ["F004", "F005"], "evidence_level": "limited"},
-      {"category": "environment", "text": "本晚取得四项环境统计，单晚结果不能确定哪一项影响睡眠。", "evidence_ids": ["F007", "F008", "F009", "F010"], "evidence_level": "limited"}
+      {
+        "category": "sleep",
+        "text": "已有本晚睡眠时长记录，历史基线不足，暂不比较平时水平。",
+        "evidence_ids": [
+          "F001"
+        ],
+        "evidence_level": "limited"
+      },
+      {
+        "category": "body_signals",
+        "text": "已取得夜间心率和HRV，缺少足够个人历史，暂不判断相对平时的变化。",
+        "evidence_ids": [
+          "F002",
+          "F003"
+        ],
+        "evidence_level": "limited"
+      },
+      {
+        "category": "previous_day",
+        "text": "前一天没有记录到运动负荷。这给本晚提供了活动背景，实际活动和压力是否影响睡眠仍无法判断。",
+        "evidence_ids": [
+          "F004",
+          "F005"
+        ],
+        "evidence_level": "limited"
+      },
+      {
+        "category": "environment",
+        "text": "四项环境统计来自有效观测。声音存在少量缺采；受影响分钟不能定位具体丢失的秒，也不能据事件空列表认定整夜无声音。单晚结果不能确定哪一项影响睡眠。",
+        "evidence_ids": [
+          "F007",
+          "F008",
+          "F009",
+          "F010"
+        ],
+        "evidence_level": "limited"
+      }
     ],
     "hypotheses": [],
-    "actions": [{"kind": "record", "text": "保持传感器摆位，并记录可能影响睡眠的生活因素。", "observe": "后续夜晚的环境与睡眠变化，以及生活记录。", "evidence_ids": ["F007", "F008", "F009", "F010"]}],
-    "limitations": ["wearable_estimates", "relative_sound_only", "no_stage_timeline", "unobserved_lifestyle", "clock_error_unknown", "baseline_insufficient"]
+    "actions": [
+      {
+        "kind": "record",
+        "text": "保持传感器摆位，并记录可能影响睡眠的生活因素。",
+        "observe": "后续夜晚的环境与睡眠变化，以及生活记录。",
+        "evidence_ids": [
+          "F007",
+          "F008",
+          "F009",
+          "F010"
+        ]
+      }
+    ],
+    "limitations": [
+      "wearable_estimates",
+      "relative_sound_only",
+      "no_stage_timeline",
+      "unobserved_lifestyle",
+      "clock_error_unknown",
+      "baseline_insufficient",
+      "sampling_gaps_present",
+      "event_detection_incomplete",
+      "single_night_not_causal"
+    ]
   }
 }

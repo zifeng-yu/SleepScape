@@ -1,8 +1,8 @@
 # 数据契约与展示口径
 
-状态：当前Garmin采集/展示与环境接收合同；环境查询及LLM合同标为待实现。更新于2026-11-17。
+状态：Garmin/环境采集、P1模型基础、P2/P3环境查询与看板、P5/P6运行合同已实现；P4分级资格、检查审计、匿名证据/Prompt、模型调用、唯一报告与展示已实现。更新于2026-11-19。
 中国区多日采集已完成；最新独立对账和完整验收结果见 [核验报告](verification.md)。
-Garmin看板、接收API与USB短采已有核验；云端、环境曲线、长期采集和LLM仍待完成，不能把合同视为运行程序。
+Garmin看板、接收API、USB短采、模型合成连接和环境查询已有核验；已启用索引随私有数据迁入云端，云端部署、真实Wi-Fi/TLS上传及入库查询已完成。Mac及备用移动电源下四通道短时完整采样已验；原充电头供电路径异常的根因、常驻供电、续航与长期采集尚待验收，P4报告的真实运行与云端发布以核验报告为准，程序实现不替代真实语言质量或长期验收。
 
 ## 当前数据范围
 
@@ -22,14 +22,14 @@ Garmin看板、接收API与USB短采已有核验；云端、环境曲线、长�
 | 日常活动摘要 | wellness activity summary中的时段与指标 | 不代替正式运动列表，不保证午睡或体动细节 |
 
 完整压力时序、独立呼吸时序、训练准备度、恢复时间和完整体动曲线不是当前已支持能力。
-`recoveryHeartRate`也不是恢复时间。环境首版计划采集温度、湿度、光照、相对声音汇总和事件；
-选型、采样和上传合同见下文“环境采集合同”；固件与接收程序已经建立，本轮传感器适配与验证状态见核验报告，尚无实机环境观测。
+`recoveryHeartRate`也不是恢复时间。环境首版采集温度、湿度、光照、相对声音汇总和事件；
+选型、采样和上传合同见下文“环境采集合同”；已有USB桌面短采及正式卧室联网记录，按各自测量档案保留，备用移动电源独立短采已通过，常驻供电、续航与长期观测仍待验收，具体证据见核验报告。
 
 ## 来源、标准化和修订
 
 原始JSON独立保存。标准化记录带 `resource`、`kind`、记录键、来源日期、UTC时刻、
 抓取时间和快照关联；数据保存 `source` 映射、参与映射的 `raw` 值和 `quality` 标记。
-请求审计保存转换版本、字段问题及响应状态；当前未另行查询设备/固件资料。
+请求审计保存转换版本、字段问题及响应状态；当前未另行查询Garmin设备/固件API资料。
 
 相同 `(resource, request_key, content_hash)` 不重复保存原始快照，变化的响应保留观测修订。
 当前记录主键为 `(resource, kind, record_key)`，有效响应替换对应来源分区；
@@ -66,17 +66,31 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 保存样本数和有效样本数；观测间隔不等于已确认的设备采样标准。
 预期频率未确认时，时间覆盖率保持空值，不用样本数量冒充连续覆盖率，不默认插值。
 
-## 今日暂定、滚动窗口与完整性
+## 看板睡眠日期展示边界
+
+可选`SLEEPSCAPE_DASHBOARD_START_DATE`为严格`YYYY-MM-DD`日期，范围2000-01-01至2100-12-31；空值默认不裁剪。其含义为最早可展示的**睡眠归属日**，不是采集或存储起点。
+
+- `GET /api/v1/status.dashboard_start_date`返回配置日期字符串或`null`；`latest_night`与`earliest_night`仅统计允许范围内的睡眠，无可见睡眠时均为`null`。
+- 夜晚列表按该下界裁剪，保留允许区间内的空日；查询或游标完全早于下界时，`items`及`available_dates`为空，`next_cursor=null`。未指定结束日且无可见睡眠时，使用配置时区今天与起始日的较晚者。
+- 早于下界的夜晚详情、夜晚时间轴和分析状态统一返回404及`{"error":"night_before_dashboard_start"}`；前端日期选择、翻页和旧URL同时遵守下界。
+- 睡眠日2026-11-18仍按实际起止关联11月17日晚的环境和身体读数，不按18日零点裁断跨夜窗口；昨日负荷、30日基线、Garmin N日回查及全部原始历史均不改变。
+- 独立`/api/v1/environment/timeline`的自定义UTC查询保留原合同，用于调试和查看实际采集窗口；展示下界不构成原始数据删除或更强的访问隔离。
+
+部署值与修改操作只在[运行手册](operations.md)维护。
+
+## 今日采集、滚动窗口与完整性
 
 常规`garmin-collect`默认7日详细/31日背景，截止昨日；7晚完整负荷验证建议7/38。
 `garmin-sync`按配置时区今天拆分资源：sleep、HRV、心率、SpO2、Body Battery和wellness详细数据可含今天，
-daily及背景摘要、压力、步数和正式活动仅到昨日。今天的数据标`pending`，夜晚视图`is_provisional=true`，不是全天定稿。
+daily及背景摘要、压力、步数和正式活动仅到昨日。看板不再仅按日期将今天的观测标`pending`：有效值为`available`，缺失/无效/失败旧值按实际情况分别返回。夜晚保留兼容字段`is_provisional=false`，不代表上游数据永远不会修订。
 
 同步计划保存`complete_day_through`、`provisional_dates`、`provisional_resources`和策略；请求审计保存`collection_state`。
-这些是请求覆盖及暂定口径，不证明上游同步无遗漏或手表判断正确；不修改raw来“完成”今日数据。
+这些仍是采集覆盖及暂定口径，离线核验也保留完整日边界，与看板可用性状态分开；不证明上游同步无遗漏或手表判断正确，不修改raw来“完成”今日数据。Garmin允许编辑已记录的睡眠时间，官方依据见[Garmin方案](plans/garmin.md#官方依据与能力边界)；继续保留补采、有效修订及原始证据。
+
+未结束的全天活动日即使已经取完当前分页，仍不能作为完整日负荷：正式`value=null`、`state=missing`、`reason=activity_day_not_finished`，保留`known_load_sum/activity_count`表示已知观测。分页不完整、负荷字段缺失等原因继续单独说明；不能把未完成日或空响应填成0。正常夜晚的“昨日运动负荷”仍使用D−1的已结束日。
 首次背景38日、日常7日回查、每隔7日宽回查38日；旧历史保留。仅整轮成功推进同步成功窗口，失败/无效响应保留旧值。
 短停机扩大窗口，超过30个已结束日未成功采集则返回明确补采窗口与命令并停止；未执行成功不能标为已补齐。
-看板与verify均从存量记录及请求状态回溯所需30日基线；verify以`load_evaluation_window`单列评估范围，本轮coverage统计仍按采集窗口。
+看板与verify均从存量记录及请求状态回溯所需30日基线；verify以`load_evaluation_window`单列评估范围，单次coverage统计仍按采集窗口。
 
 ## 单位与语义
 
@@ -133,13 +147,13 @@ Garmin分期属于设备估算；当前缺少区间时展示阶段总量和明�
 API共同字段为`contract_version="1"`、`timezone`、`generated_at`、`data_as_of`、`quality`。
 `generated_at`是视图生成时刻，`data_as_of`是本地最近成功数据时刻，不等于手表测量时间或手机最后同步时刻。
 数值带`value/unit/state/source_resource/source_field/source_date/fetched_at/reason/quality`；来源日、抓取时刻和实际测量时刻不可混用。
-state区分`available/missing/invalid/stale/pending/unavailable`；具体字段缺失、整次请求失败、当前日期暂定分别说明。
+state按观测区分`available/missing/invalid/stale/unavailable`；具体字段缺失和整次请求失败分别说明。看板不再按当前日期产生`pending`或`current_day_provisional`；前端可兼容既有`pending`响应，但不能将它解释成人工确认流程。
 最近请求失败且留有旧值标stale；状态页36小时未见成功数据给新鲜度提示，不推断用户忘记同步。
 
 | API | 主要合同 |
 | --- | --- |
 | `/api/v1/nights` | 1—92日窗口，limit为1—92；摘要列表含无记录日，返回`next_cursor/available_dates` |
-| `/api/v1/nights/{D}` | `cards/sleep/stages/activities/load_comparison/is_provisional`；无该来源日记录返回404 |
+| `/api/v1/nights/{D}` | `cards/sleep/stages/activities/load_comparison/is_provisional`；无该来源日Garmin记录且回退窗口无环境记录时返回404；缺睡眠但有环境记录可展示`environment_only`详情 |
 | `/api/v1/nights/{D}/timeline` | `window/series/events/stages`；from/to成对、带时区，最多48小时，每序列2—2000点上限 |
 | `/api/v1/status` | 资源尝试/成功、脱敏错误、暂停时间、能力、存储计数及本地备份状态 |
 
@@ -153,19 +167,21 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 睡眠`stages`累计量与timeline区间分开：当前官方数据只有前者，后者返回空列表；不把深/浅/REM累计条当夜间顺序。
 浏览器使用散点并支持框选/平移/缩放；只有真实区间存在才可画分期，来源没有区间时明确降级。
 
-页面及业务API只读且同源，响应不缓存；应用HTTP Basic校验私有PBKDF2哈希，Caddy保留Authorization。
+页面入口为`GET /sleep`和`GET /sleep/`；根路径`/`的GET/HEAD在合法Host下返回404（含查询参数、匿名或已登录），无Location和WWW-Authenticate。静态资源、业务API、设备POST及`/health`路径不变。
+
+页面及业务API只读且同源，响应不缓存；应用HTTP Basic校验私有PBKDF2哈希，Caddy保留Authorization。HTTPS认证后可签发`__Host-sleepscape_session`：固定30天（2592000秒）、Secure、HttpOnly、SameSite=Lax、Path=/、无Domain；使用到期时间、随机nonce和HMAC签名，不含密码或健康数据。签名绑定当前私有密码记录，重启不失效，改密码记录立即失效；到期或篡改拒绝认证，访问不滑动续期。显式Authorization优先校验，设备POST不接受浏览器Cookie授权。
 未设密码仅允许本机直接访问，远程健康数据请求需要HTTPS；`/health`不含健康数据。`/docs`始终关闭，debug仅可开放受保护的`/openapi.json`，默认关闭，不加载CDN；云端TLS与代理验收单独记录。
 
 ## 备份状态合同
 
 `db-backup`在线复制SQLite到新UUID文件，核验完整性、外键和raw；`db-restore-check`只在临时目录恢复检查，不覆盖运行库。
 两者成功写私有`backup-status.json`，仅含`last_success_at/status="verified"/record_count`；状态API只返回`state/last_success_at`。
-这表示最近一次本地核验成功，不证明副本离机、已加密、当前仍存在或已安排定时备份。
-当前无自动清理、备份调度、加密/离机传送或磁盘门限保护；保留策略须由用户另行管理。
+这只表示该次手动SQLite备份的最近核验成功，不证明副本离机、已加密或当前仍存在。
+P6成套备份、受控保留、磁盘准入和路径/SSH导出已实现，云端04:00定时器已启用；它们使用独立的维护状态合同，不由此处的`backup-status.json`推断。手动SQLite备份不参与自动删除；离机目标尚未配置，具体合同见下文[自动维护运行合同](#自动维护运行合同p6)。
 
 ## 环境采集合同
 
-本节是固件、USB本地接收、写入API与独立环境存储的共同合同，HTTP设备入口默认关闭；各路径的实现和实机验收状态以[核验报告](verification.md)为准。UTC查询映射与环境看板呈现仍按本节约定后续实现。严格机器校验在`domain/environment.py`，可重放合成信封见`tests/fixtures/environment-batch.json`。
+本节是固件、USB本地接收、写入API与独立环境存储的共同合同，HTTP设备入口默认关闭；各路径的实现和实机验收状态以[核验报告](verification.md)为准。UTC索引、只读查询和P3看板已实现。严格机器校验在`domain/environment.py`，可重放合成信封见`tests/fixtures/environment-batch.json`。
 合同按测量能力定义，不绑定某一硬件型号；当前测量配置示例为M5 Atom Voice（C008-C）、Gravity AHT20（SEN0528）、VEML7700（SEN0228）及被动分线模块DFR0759。两传感器使用同一条3.3V I²C总线，SDA21/SCL25、100kHz。
 只启用温度、相对湿度、光照、相对声音；首版没有CO₂或VOC推算CO₂通道。替换型号必须登记新测量配置并验证对应驱动。
 采购、接线和资源可行性见[硬件方案](plans/hardware.md)。本节维护字段与口径，不重复采购步骤。
@@ -173,7 +189,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 ### 来源隔离、配置与身份
 
 环境观测、时间锚点、测量配置、写入审计分别保存，使用独立环境表；不写入、覆盖或重新解释Garmin事实表。
-后续查询将以UTC关联两类来源；本轮只保存原始单调时间和校时锚点，未在当前页面生成环境曲线。睡眠归属日期仍采用已有Garmin规则。
+查询服务根据同boot锚点生成独立UTC投影，保留原始单调时间和校时锚点，P3页面读取该投影。睡眠归属日期仍采用Garmin规则；环境自定义窗口不推断入睡时间。
 
 - `device_id`是登记后的设备标识。HTTPS请求由设备令牌绑定，客户端不能用一个设备令牌替别的设备写入；USB本地采集由明确选定的串口及会话标识绑定，不要求网络令牌。
 - `boot_id`每次启动生成新的随机标识，断电后不能复用。单调时钟只在同一`boot_id`内有效。
@@ -200,7 +216,7 @@ state区分`available/missing/invalid/stale/pending/unavailable`；具体字段�
 空请求、未知记录类型、非有限数、字段类型/单位错误、非法计数和超出容量的字符串均拒绝；标识最长64个ASCII字符，单记录质量标记最多16个已登记代码，不接受自由文本日志作为记录。
 
 写入口只在HTTPS下接受专用设备Bearer令牌，令牌不放URL、不写日志、不进入Git。
-看板HTTP Basic与设备Bearer分别校验：设备令牌不能读健康数据，看板密码不能写设备数据。
+看板HTTP Basic/会话Cookie与设备Bearer分别校验：设备令牌不能读健康数据，看板密码不能写设备数据。
 全局GET/HEAD限制已**仅对上述精确路径的POST窄化**，不能对整个`/api`目录放行写方法；尾斜杠、相似前缀和其他路径不成为旁路。
 现有UI、静态资源和只读API继续按原访问规则运行，不开放跨域。
 
@@ -227,15 +243,45 @@ USB和HTTPS复用同一`EnvironmentBatch`及逐记录ACK合同、原始记录身
 时间锚点包含`anchor_id`、`monotonic_ms`、`utc_at`、`source`、`uncertainty_ms`和质量代码：
 
 - `utc_at`明确带`Z`，`source`只接受实际来源`ntp`或`host_usb`；`uncertainty_ms`是非负误差估计，没有可靠估计时为null，不能填0伪装精确。
-- `host_usb`由Mac与当前启动周期串口握手关联，不称为设备NTP校时；主机时钟准确度未经独立验证，误差保持null，后续查询只能按估计时间使用。仅接收到旧批次不能为其旧启动周期新增当前时钟锚点。
+- `host_usb`由Mac与当前启动周期串口握手关联，不称为设备NTP校时；主机时钟准确度未经独立验证，误差保持null，查询只能按估计时间使用。仅接收到旧批次不能为其旧启动周期新增当前时钟锚点。
 - 锚点身份为`(device_id, boot_id, anchor_id)`，内容不可变；校时得到新结果时追加新锚点，不修改原记录或旧锚点。
-- 后续只读查询映射应返回`utc_start/utc_end`、`time_quality`、`time_uncertainty_ms`、所用锚点ID和`time_mapping_version`。`time_quality`区分`synced`、`estimated`、`unknown`、`conflict`；未经校时的原始记录无需编造UTC。
+- 只读查询映射返回`utc_start/utc_end`、`time_quality`、`time_uncertainty_ms`、所用锚点引用、`time_mapping_algorithm`、`time_mapping_version`和`time_index_revision`。`time_quality`区分`synced`、`estimated`、`unknown`、`conflict`；未经校时的原始记录不编造UTC。存储读取保留原始锚点ID，公开视图只返回稳定匿名引用。
 - 同一启动周期内可根据锚点与单调差值估计UTC；离锚点越远，须考虑已验证的时钟漂移。未验证漂移时误差保持未知并标`estimated`，不声称秒级精确。
 - 多锚点不一致或UTC跳变时保留全部证据，标`conflict`并暂停冲突区间精确叠加；不得因NTP调整产生重复分钟、倒序窗口或覆盖旧值。
 - 无电池RTC的设备冷启动且无网时为`unknown`，不沿用上一启动周期的单调映射。只有该启动周期后续获得有效锚点才可能补映射；无锚点周期永不借接收时间伪造采集UTC。
-- 已同步后断网的记录可以估计时间，但48小时缓存能力不等于48小时精确时钟保证。未知UTC记录保存并计入状态页，不绘制到Garmin时间轴。
+- 已同步后断网的记录可以估计时间，但48小时缓存能力不等于48小时精确时钟保证。未知UTC记录保留并计入查询和P3状态摘要，不绘制到时间轴。
 
 独立映射使后续校时可改善查询时间而不改变记录身份或原始载荷；重复上传始终比较原始内容，避免“同ID、校时后改UTC”的幂等冲突。
+
+### UTC派生索引与只读查询
+
+当前算法`boot-fixed-offset-1`按`device_id/boot_id`隔离：以单调时间最早的可用锚点为固定偏移参考，时间相同时按锚点ID确定顺序；不逐分钟切换最近锚点而造成重叠或倒序。锚点带质量警告时不建立映射。UTC计算保留微秒，映射范围为2000年至2100年，2100年起点仅可作右开端点；超范围记录保持`unknown`。
+
+两锚点偏移差超过**2,000 ms工程跳变阈值加双方已声明误差**时视为冲突；无误差估计不等于准确度为0，也不作为无限容忍跳变的理由。算法检查全体锚点误差区间，避免宽误差参考锚点掩盖其他锚点间的矛盾。当前保守地将整个boot标`conflict`并停止UTC叠加，保留参考及冲突见证；不猜测哪个锚点正确。该阈值不是精度校准，长期未验证的漂移也可能触发冲突。尚无经验证的振荡器漂移模型，因此现阶段有UTC的窗口均为`estimated`且`time_uncertainty_ms=null`，不输出`synced`或秒级精确声明。
+
+原环境schema保持1。显式迁移新增`environment_index_schema`、`environment_index_boots`、`environment_time_index`，不修改Garmin或原环境事实。每个boot保存来源修订、已索引修订、映射版本和有界映射摘要；记录、锚点及状态插入触发来源修订推进。兼容新锚点或补传只更新必要投影和索引修订；参考偏移或冲突状态改变时重建受影响boot，映射版本推进。新配置记录保留独立配置身份，不混合声音统计。查询只接收来源与索引修订一致的boot，未完成回填的旧UTC不作为当前结果返回。
+
+首次启用与强制重建先创建并恢复核验备份；只通过显式用例执行，启动、GET和doctor不迁移。已启用索引时，事实、来源修订和UTC投影在同一接收事务提交后才ACK；索引失败使整个批次回滚。重复批次不重复保存事实，可修复中断遗留的待索引状态。备份覆盖新增表，并校验来源引用、投影与纯计算一致性。操作入口见[运行手册](operations.md)，真实库是否已启用须看实际执行记录，影子核验不等于源库已迁移。
+
+`EnvironmentReader`以独立只读事务提供最多48小时、最多10,000条记录的有界查询。协议中分钟与事件窗口均不超过60秒，因此UTC索引限定`start−60秒 ≤ utc_start < end`并再筛选`utc_end > start`，保留跨窗口起点的记录，不扫描此前全年记录；多取一条检测截断，截断时不计算缺口或覆盖。原始UTC区间、实际粒度、通道质量和完整分钟统计保持原样，不把裁剪交集伪装成重新聚合结果。
+
+`EnvironmentViewService.timeline/status`是P3复用的白名单服务。输出匿名设备、boot、配置/摆位与锚点引用，分钟指标或受限事件、配置边界、缺口及重叠。覆盖仅表示已映射分钟窗口的时间并集，绝不等于四通道齐全或P4的ready；多来源不自动选源、跨配置不合成全夜均值。未知、冲突、待重建计数明确标`all_history_not_window`，不能推断其属于请求夜晚。
+
+设备状态区分最近接收、最后可映射采样和最后收到的缓存快照。近期接收提示阈值为15分钟，仅用于新鲜度，不表示设备仍在线；`currently_collecting=null`。历史状态补传可能成为最后收到的快照，必须保留该含义；未迁移时不为获取最新状态扫描全库。最后映射采样按有界boot元数据与索引取得，超出查询保护上限明确降级，不返回伪造的最新状态。
+
+### 看板环境投影（P3）
+
+`GET /api/v1/metrics`返回`version/items`；唯一清单在`domain/metrics.py`，保留Garmin既有ID并加入`temperature_c`、`relative_humidity_pct`、`illuminance_lux`、`sound_relative`。注册项包含`id/label/unit/source/color/precision/default_visible/axis/series_types/aggregation/missing_policy`。同一注册驱动API序列、前端图例、纵轴和URL，未知URL项忽略。
+
+统一夜晚timeline增加环境`series/events/environment`，独立`/api/v1/environment/timeline`复用同一投影，必填from/to、带时区、最多48小时，每序列`max_points`范围2—2000。每次最多8个来源/boot组、100个声音事件、32个来源，缺口/重叠各最多128段；上游最多10,000记录。所有截断明确标记，截断读集不计算完整覆盖。统计范围为返回的原始窗口，不因画面降采样而改变分母，也不作为睡眠完整性。
+
+来源/boot组超过8个时，按本次查询读集内各组分钟记录的最新采集`utc_end`从新到旧选取8组，同刻按`(source_ref, boot_ref)`确定顺序；选择后保留原查询组序及各组原始点序。不得按接收时间选取，避免迟到的旧记录挤掉最新采集。`series_truncated=true`仍明确表示组数截断，不将未展示旧组解释为采集失败或删除；缩小自定义查询窗口可查看这些旧组。此规则只控制投影，原始存储和其他读取限额不变。
+
+环境点的`timestamp=window_start`只是绘图定位，同时返回原始`window_start/window_end`、min/max、通道状态和有效/观测/预期数、质量、估计误差、received_at以及匿名source/boot/record/segment引用。显示降采样选桶中最低min和最高max对应的原始窗口，不创造瞬时值或新均值；前端只在真实窗口内匹配悬停，不跨缺口借值。不同配置/boot单独成组，缺值断线。
+
+声音`minute_mean`为energy_mean_dbfs，`minute_peak`为max_1s_rms_dbfs，两者共用相对dBFS轴；点保留采样覆盖、DMA/削波和检测器覆盖/计数。事件返回start_at/end_at包络、活跃时长、峰值/基线及合并/持续/不完整标记，`envelope_is_continuous_sound=false`，不能把包络内间隙解释为连续声音。
+
+设备状态展示最后映射分钟的通道健康与已知硬件/固件、不可变配置数值，不原样回显私有自由文本标识。最后接收快照保留其接收时刻、积压/丢弃/隔离计数与scope，不能当作实时设备状态。`status.latest_night`仍指Garmin最近睡眠日，`latest_environment_capture`独立用于定位试采；环境读取异常用unavailable隔离，不中断Garmin视图。所有新增GET沿用Host、密码、HTTPS、no-store保护，不写库、不触发采集或模型。
 
 ### 分钟指标与逐通道覆盖率
 
@@ -329,11 +375,11 @@ DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参�
 分钟与受限事件共享1MiB有界队列（最多64段，每段最多128条），隔离文件另限64KiB；没有自由文本运行日志写入采集队列。当前每分钟最多1条合并事件，已进入合并摘要的片段不算丢弃。已定稿记录不能为更新丢弃计数而重写，后续淘汰用独立`device_status`记录。
 设备状态保存`status_seq`、`monotonic_ms`、缓存待传条数、按记录类型区分的累计丢失数、`quarantined_count`和最多16个丢失范围。当前固件每5分钟生成快照，保留累计丢失量；没有可可靠重建的逐boot/seq范围时输出空数组且`ranges_truncated=true`，不编造范围。隔离计数独立于缓存淘汰数。
 状态身份为`(device_id, boot_id, status_seq)`，每次生成新快照时递增；相同身份内容不可变。它不进入Garmin时间轴、不能携带自由文本日志，也不把服务器尚未接收误判为采集失败。
-缓存超过已验证保留范围时按最旧段优先淘汰，累计各类丢失记录数；当前没有完整逐条丢失时间范围，明确标范围不全。设备CLI已有环境状态计数，后续页面需区分采集缺失和传输延迟。
+缓存超过已验证保留范围时按最旧段优先淘汰，累计各类丢失记录数；当前没有完整逐条丢失时间范围，明确标范围不全。设备CLI和P3状态页已展示接收、最后映射采集及缓存快照；不能将传输延迟等同采集缺失，也不能把全历史丢弃量归入某晚。
 分钟记录提交Flash后才属于断电可恢复数据；写入应有版本、校验和与可恢复边界，启动扫描不能把半条记录作为有效观测。
 音频DMA、网络和存储分开调度，但不能据此承诺Flash擦写绝不影响音频；实现须统计丢样，并验证接近容量上限、TLS重连、断网补传和断电恢复。
 
-## 后续分析边界
+## 分析边界
 
 - 入睡前运动、活动和压力与睡后数据分开，不能把结果发生后的数据当原因。
 - 晨起评分、Body Battery等综合指标可能包含同夜睡眠/HRV，不能作为独立原因。
@@ -343,51 +389,179 @@ DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参�
 - 未校准声音指标不标为准确dBA，不用于判断是否符合专业噪声标准。
 - 原始响应与标准化一致只证明程序转换一致，不证明手表测量或睡眠判断准确。
 
-## 睡眠分析合同（待实现）
+## 模型、完整性与报告栏目状态合同
 
-2026-11-17用户确认：双源核心齐全才首次调用LLM、缺项在看板显示、每日09:00按配置范围补取、每晚最多一份成功报告。本节与[JSON合同](contracts/sleep-analysis.schema.json)定义新功能，不代表运行程序已实现。
+GET /api/v1/nights/{D}/analysis沿用访问保护、日期边界及no-store；只读当前资格与已保存报告，不采集、不调用模型、不迁移/写库、不读取Key正文。来源局部失败不能清空已有报告或其他曲线。
+
+| 字段 | 当前合同 |
+| --- | --- |
+| night_date | 请求的睡眠来源日D |
+| implementation_stage | 固定reports |
+| data_state | waiting_data / ready / expired_unanalyzed；当前资格不可读时not_evaluated |
+| readiness / readiness_unavailable | 原分级检查白名单或null，配套布尔读取状态；含policy、quality_state、warnings、missing、optional_missing及覆盖统计 |
+| missing | 当前阻塞必需缺项，与readiness.missing一致；不可读时为空不等同齐全 |
+| execution_state | not_initialized / not_configured / disabled / invalid_configuration / waiting_data / expired_unanalyzed / queued / running / failed / discarded_input_changed / blocked_budget / blocked_attempts / blocked_input_budget / unavailable / complete等固定安全状态，独立于数据质量 |
+| automatic_enabled | 日任务报告自动开关布尔值；不授权GET外呼 |
+| attempt | 该夜晚最近一次尝试的status、固定error_code、retry_after截止时刻，以及跨输入、跨日累计的attempt_count；无尝试为null，不输出内部ID/原始错误 |
+| model | 安全配置、最近模型请求状态、共享预算和运行元数据；last_check_*可能来自合成或报告请求，不等同已发布报告；无密钥/URL/正文。展示标明共享请求范围，失败原因不推断报告未发布；本晚发布状态依据已校验的report，与最近请求是否失败独立 |
+| blockers | 固定初始化/配置/预算/读取错误码，不输出异常正文 |
+| next_check | 上海09:00计划，不是定时器实际触发证明 |
+| report | 可用的已发布报告白名单或null；字段如下 |
+| notice | 固定说明：生成时证据不改写，刷新不调用模型 |
+
+report包含night_date、generated_at、model_ref、prompt_version、input_quality_state、source_changed及source_changed_reasons。content为已校验输出去掉私有input_hash后的对象；evidence仅facts/timeline/events；required_limitations保留生成时限制。公开结果不返回完整模型输入、Prompt、内部input_id/attempt_id/request_id、私有指纹、设备身份或模型配置地址。
+
+source_changed为true/false/null。true表示当前来源指纹已不同；null及current_data_unavailable表示无法比较，不能冒称未改变。已发布报告读取优先，当前数据暂不可用仍保留可用原结论；原报告损坏时明确unavailable，不展示未验证文本。生成时间与当前检查时间分别显示，报告质量不覆盖当前数据质量。
+
+历史GET /api/v1/nights的analysis_summary只读上次保存检查，含state、checked_at、scope=last_saved_check、unavailable、quality_state、policy_version、current_policy；未保存not_evaluated、失败unavailable。report_summary独立包含state、generated_at和unavailable，已发布为complete；它不逐夜重算来源变化。详情GET不能刷新历史审计或生成报告。
+
+## 每日采集运行合同（P5）
+
+`daily-run`以Asia/Shanghai自然日作为幂等键。`SLEEPSCAPE_GARMIN_LOOKBACK_DAYS=N`允许1—31，睡眠/HRV明细与摘要均在D−(N−1)…D；首日前一天仅额外补心率，独立负荷背景为D−(N+30)…D−1。停机不扩大详细窗口，窗口外补采必须显式指定。采集审计仍保留今日资源的覆盖边界，任务完成不改变上游完整性含义，也不为当日卡片统一设置待确认。
+
+`GET /api/v1/status.daily`与CLI `daily-status`复用只读投影：
+
+| 字段 | 含义 |
+| --- | --- |
+| `state` | `not_run / available / unavailable`，表示运行元数据是否可读，不代表睡眠已齐全 |
+| `lookback_days` | 当前配置的N；`observations`对应当前上海日的N日范围，最近任务有独立window |
+| `schedule` | `timezone=Asia/Shanghai`、`time=09:00`、`installation_state=unknown`、`next_planned_at`与`next_run_kind=planned_not_installed`；只给计划，不检查systemd是否安装/启用 |
+| `latest` / `history` | 最近任务/至多31个任务日的安全记录；隐藏内部run_id，不包含测量值、凭据、源响应或私有路径 |
+| 任务记录 | `day/status/phase/attempt/started_at/finished_at/window/request_counts/error_code/stop_reason/retry_not_before/analysis` |
+| `request_counts` | `planned/completed/failed/http`，计划逻辑请求、完成资源、失败资源和实际HTTP分别计数；不可获得的物理次数为null，不拿计划数替代。completed与failed可因无效响应重叠，不用于计算“齐全率” |
+| `observations` | 当前窗口逐日`{date,sleep}`；`available / missing / invalid / stale / request_failed / not_collected`，只表达睡眠观测及最新请求状态，不输出健康数值，不代表睡眠窗口闭合、所有Garmin指标齐全或P4双源ready |
+| `observations_error_code` | 无法安全读取事实时为固定错误码，观察列表为空但不伪称没有缺项 |
+| `analysis` | 状态查询为automatic_enabled/automatic_disabled；显式daily-run结果为独立reports.status，不改变采集终态 |
+
+任务`status`为running/completed/partial/failed/interrupted/deferred；`phase`为preparing/collecting/finished/deferred。completed允许某日API有效空返回，此时该日仍缺失。同日终态默认不再执行；显式`--retry`只重试非completed终态，且不得越过共享Retry-After。被锁/坏状态阻止且未产生任务时，CLI返回blocked。状态GET只读推断已退出进程的遗留running，不写恢复结果；下次显式执行在共用采集锁内持久化恢复。数据库已完成而JSON未终结时，对照run_id恢复，不重复取数。
+
+`storage/daily_runtime.py`管理私有`daily-runtime.json`（schema_version=1，至多31个任务日、128KiB）和`collection-cooldown.json`，原子写入、严格白名单、损坏/不安全权限拒绝执行。裁剪任务摘要不删除SQLite历史审计与原始数据；重试覆盖当日摘要、递增attempt，实际各次采集仍保留SQLite runs。账本与库分开保存，成套迁移与恢复规则见[运行操作](operations.md#每日采集编排)。缺项列表不枚举窗口外所有历史缺口；环境收据不受09:00触发控制。
+
+## 自动维护运行合同（P6）
+
+`GET /api/v1/status.maintenance`与`maintenance-status`复用只读投影；仅读取有界维护账本和磁盘统计，不扫描/校验备份正文，不创建目录、不联网或修复状态。GET失败只影响维护卡，保留其他数据展示。
+
+| 字段 | 当前含义 |
+| --- | --- |
+| `state` / `error_code` | `not_run / available / unavailable`及固定错误码；损坏不重置，未知不是零备份 |
+| `schedule` | `time=04:00`、`timezone=Asia/Shanghai`、`installation_state=unknown`、`next_planned_at`；不证明systemd已经启用 |
+| `latest` | 最近任务的`day/status/phase/started_at/finished_at/error_code`；隐藏内部backup_id，状态含running/completed/partial/failed/interrupted，未入账阻止由CLI标blocked |
+| `backups` | `verified_count/total_bytes/latest_verified_at/retention_over_budget/legacy_count/legacy_bytes`；为最近登记证据，不在GET重新计算哈希。账本不可读时数量/字节为null，不伪装成0 |
+| `disk` | `state/measured_at/volumes/bytes/error_code`；系统与数据盘只返回role、总量、可用字节/比例、水位；固定文件类别为database/wal/shm/runtime，无私有路径。某运行账本大小不可读可为null，不替代其原结构校验 |
+| `offsite` | `status/mode/last_success_at/error_code/location_verified/retained_count/retained_bytes/over_budget/location_state/transit_encrypted/at_rest_encryption`；mode为none/path/ssh。disabled映射none；未配置offsite_not_configured，配置变更not_checked，成功verified只代表目标复制核验 |
+
+路径目标`location_verified=false`，不声称已离机；SSH可确认目标连接和传输加密，但不确认静态加密。主机、用户、目录、私钥、配置指纹和健康正文不进入状态。未配置目标的维护可以completed，同时明确没有离机副本。已配置导出失败时为partial/failed，保留旧副本并跳过本地保留清理。
+
+维护账本`maintenance-state.json`使用schema_version=1，最多31条运行摘要、256个受控包登记、256KiB；任务与每日采集分离锁定。成套包清单记录SQLite与已有三份运行账本的SHA-256、字节数、表计数及存在性，运行关联须与同批数据库一致。单个包不包含凭据、.env或整个P6清单。保留决策只删除登记包，保留最新有效副本；未知/损坏文件不认领或清理。完整恢复与一致性边界见[维护方案](plans/maintenance.md#成套备份与恢复边界)。
+
+容量策略在`domain/maintenance.py`唯一维护：预警25%、限制15%或2GiB、临界5%或512MiB，取系统/数据盘更严重者。restricted阻止新模型额度预留和大备份，critical/unknown阻止新事实写入。环境HTTP失败返回503及Retry-After=60且无ACK；已收到请求不等于提交成功。实际磁盘满同样不确认；保留已有只读能力，不删除观测腾空间。此合同不修改环境上传JSON、固件协议或Garmin字段。
+
+## 睡眠分析合同
+
+当前实现分级资格、同快照、N日复查/审计、最小输入、模型调用、唯一报告与来源变化提示。[包内JSON合同](../src/sleepscape/resources/sleep-analysis.schema.json)是当前发送输入与生成输出的唯一机器结构；检查结果仍由其独立合同维护，不混为模型输入。
 
 ### 双源完整性门槛
 
-策略版本`dual-source-strict-1`。先确定睡眠来源日D及API已闭合的主睡眠窗口`[start,end)`；必须`start < end <= 快照截止时刻`且不长于24小时，睡眠时长有效、没有尚在进行标记或未解决的核心数据冲突。仅日期为今天/is_provisional不能判缺失；也不能由HTTP200推断睡眠已结束。
+当前唯一计算策略为`dual-source-coverage-1`。分析资格与真实完整程度独立：保留实际缺样；达到以下门槛可以分析并附质量限制。99%与300秒是初始工程参数，不是医学或统计学准确度保证；修改参数须更新策略及验收，不靠界面四舍五入放行。
 
-| 组 | 必需输入 | 不满足时 |
+先确定睡眠来源日D及API已闭合主窗口`[start,end)`；必须`start < end <= 快照截止时刻`且不长于24小时，睡眠时长有效、没有尚在进行标记或未解决核心冲突。日期/is_provisional和HTTP200不能证明睡眠闭合。
+
+| 组 | 放行要求 | 不满足时 |
 | --- | --- | --- |
-| Garmin睡眠 | 来源日、开始/结束、总睡眠时长、睡眠平均心率、夜间平均HRV | `missing_garmin_core`，列具体字段和来源请求状态；不拿日均/静息心率代替 |
-| 昨日背景 | D−1完整日的运动负荷和平均压力 | `missing_previous_day`；负荷0必须有完整活动分页与日摘要佐证，无法确认不能补0 |
-| 环境时间 | 每个相关boot存在可用锚点、同boot映射无冲突，配置/摆位能确定 | `unknown_environment_time`或`time_conflict`；不能借别的boot或接收时间映射 |
-| 环境覆盖 | 覆盖整个睡眠窗口的分钟记录齐全；温度、湿度、光照、声音四通道每个相关窗口都有效 | `missing_environment_minutes`/`invalid_channel`，列通道、缺失区间与数量 |
+| Garmin睡眠 | 来源日、起止、总睡眠时长、平均心率、夜间平均HRV有效 | `missing_garmin_core`；不拿静息心率或周均HRV替代 |
+| 昨日背景 | D−1完整日的运动负荷及平均压力；负荷0须有完整分页和日摘要佐证 | `missing_previous_day`；未知不能补0 |
+| 时间与来源 | 相关boot有可用锚点、映射无冲突；同设备/配置/摆位，分钟无重叠/错位 | 原时间/配置错误继续阻塞；接收时间不能代替采样时间 |
+| 各环境通道 | 每通道独立满足`usable_count / expected_count >= 0.99`，不合并不同通道的分母 | `insufficient_channel_coverage`；预期计数不可确定也不放行 |
+| 局部连续问题 | 每通道连续受影响分钟范围不超过300秒，含整分钟缺记录和部分/无效窗口，按睡眠交集裁边 | `excessive_sampling_gap`；不能用整夜平均掩盖局部连续问题 |
+| 数值与结构 | 单位/固定采样配置/计数/统计值自洽；无严重质量错误 | `invalid_channel`等阻塞；不把错误数值计为有效 |
 
-严格默认要求：选取与睡眠窗口有交集的真实分钟窗口，按boot网格和已确认摆位计算应有窗口并去重；其并集必须覆盖睡眠窗口，整条分钟缺失也计缺口。窗口内各通道`valid_count=expected_count>0`、没有无效读数/缺样/超量程；声音还须完整秒数与预期一致、无DMA丢样或削波。首尾按真实窗口交集算覆盖时长，统计值仍说明来自整分钟，不能声称仅对交集秒数重算了平均值。**不默认采用95%覆盖作为“齐全”，不悄悄放宽门槛。**
+采样分母来自不可变测量配置与真实boot网格，整分钟缺记录也计入预期。分子只使用经过合同与质量验证的有效样本：温湿光是有效采样点；声音是完整且有效的一秒窗口。声音`valid_samples`可能包含已收到却未形成有效秒的PCM，不能直接把它作为覆盖分子；保留`valid_count*16000 <= valid_samples <= observed_samples <= expected_samples`与`valid_duration_ms=valid_1s_count*1000=valid_count*1000`等校验。
 
-这比硬件连续采样“音频覆盖≥99%”的工程验收目标严格：硬件可以通过稳定性检查，但某晚仍因小缺口不生成报告。迟到数据可补传；真正未采到、无时间锚点且无法恢复的数据不会自动变齐全。看板保留其观测和缺项，过回查窗口标未分析。若将来需要容忍缺口，必须另行明确完整性策略，而非为产报告伪造数据。
+只容忍明确计数的`partial_window/audio_gap/sensor_error/missing`等缺样，且部分窗口统计来自有效样本。计数合法且valid=0、统计全null可作为零有效采样缺口；valid>0但缺必要统计、非法单位/计数、数值越界、削波、DMA溢出或总线/CRC等严重错误继续阻塞。不会因为覆盖比例达标而重新接受无效值，低光工程提示与声音事件检测预热不应被误作整通道失效。
 
-有一致锚点但绝对误差未知可以标`estimated`参与整夜统计，同时必须加入`clock_error_unknown`，不得输出秒级因果或严格事件先后。这表示时间可映射，不表示已校准精度。首版LLM要求整晚同一选定设备、测量配置和摆位；跨配置/摆位或未选定重叠来源时以`configuration_changed`阻塞，避免混合不可比dBFS。看板仍可分段展示这些数据，不能为了分析合成全夜声音均值。
+每通道`max_affected_span_seconds`为相邻受影响分钟区间与整分钟缺口合并后的最长跨度。它是保守影响范围，不是精确连续漏采时长；当前分钟统计无法还原每个缺秒的位置。首尾相交分钟的采样计数来自整分钟、分子分母同口径；时长覆盖与连续影响范围才裁至睡眠窗口，保留边界限制。跨boot缺口导致应有网格无法确定时不猜预期数量，不据此通过99%门槛。
 
-可选项：阶段累计/评分、呼吸、SpO2、Body Battery、详细活动时间、个人历史基线、声音事件摘要和生活记录。缺失逐项显示为`optional_unavailable`，不阻塞核心齐全；没有阶段区间等“不支持”与“尚未同步”分开。事件检测暖机/覆盖不足不能写成0次事件。若某个必需字段长期不可用，保持阻塞并明确报告原因，不自动从必需项移除。
+达到门槛但仍有缺口时：`core_ready=true`、`data_state=ready`、`quality_state=with_gaps`，轻微缺样列`warnings`及恢复性；没有环境质量缺口为`quality_state=complete`；仍有任何阻塞项为`quality_state=insufficient`，列`missing`。`complete`只描述当前必需数据的质量判定，不代表可选输入全部存在或测量医学准确。缺样不补零、不插值伪造原始数据；明确无法恢复的采样仍为unrecoverable，规则放行不改变该事实。
 
-缺项合同：`code/source/metric/date/window_start/window_end/expected/observed/recoverability/last_checked_at`；恢复性取`await_sync/await_upload/unrecoverable/unknown`。服务状态和缺项由程序计算，不让LLM判断自己是否有足够输入。Garmin核心请求最近尝试失败且只剩陈旧旧值时不通过；可选资源失败仅影响对应模块。
+有一致锚点但误差未知可标estimated并加入clock_error_unknown，不支持秒级先后或噪声导致觉醒的判断。分期累计/时间线、评分、呼吸、SpO2、Body Battery、活动细节、历史基线、事件摘要和生活记录为可选项，缺失列optional_missing，不阻塞核心资格；检测覆盖不足不能写成整夜0次事件。
 
-### 状态与发布
+缺项及质量提示统一使用`code/source/metric/date/window_start/window_end/expected/observed/recoverability/last_checked_at`；恢复性为await_sync/await_upload/unrecoverable/unknown。核心Garmin最新请求失败仅余陈旧值时仍阻塞；可选资源失败只影响对应模块。模型不自行决定是否绕过门槛。
 
-数据状态：`waiting_data / ready / expired_unanalyzed`；执行状态：`not_configured / queued / running / failed / blocked_budget / blocked_attempts / blocked_input_budget / complete`；报告额外标记`source_changed`。两类状态分开，缺Key不能掩盖缺数据，已存报告不能被失败尝试清空。
+### 当前检查结果与存储
 
-每晚按单用户`night_date`唯一发布，不引入每日自动报告修订。`analysis_inputs`保留快照；`analysis_attempts`允许失败重试；`sleep_analysis_reports`只在第一次成功、输入仍一致且未已有报告时插入。模型返回`insufficient_input`是拒绝/失败，不是成功报告。生成中事实变化为`discarded_input_changed`，保留尝试、候选不展示；发布后数据变化仅更新源数据和source_changed。
+evaluate_readiness(day, night, environment, now, lookback_days)是纯函数；策略版本为dual-source-coverage-1。服务复用Dashboard已有来源选择和负荷规则，并用同一数据库只读事务读取原始环境投影，不消费显示降采样结果。睡眠时长还必须不超过真实窗口；来源日、单位、字段与资源须匹配睡眠/夜间口径，不能以静息心率或周均HRV替代。核心来源最近请求失败而只剩旧值时阻塞；可选请求失败不会污染核心。
+
+window为UTC start/end及duration_seconds，时间非法、倒置或超过24小时为null。未结束但结构有效的窗口可保留用于解释缺项，不能ready。missing和warnings的每项为code/source/metric/date/window_start/window_end/expected/observed/recoverability/last_checked_at；expected/observed仅为有限非负数、null或固定状态码，不回显源错误。昨日负荷、压力和可选活动日期为D−1，窗口为空，不冒用当夜睡眠范围。相邻同类缺项合并区间，数字累加，不跨有效分钟填平；不截断真实缺项。
+
+garmin_summary列必需项数、有效项数、窗口状态及各卡片状态/来源日，不包含请求正文。optional_missing单列阶段累计/分期、评分、呼吸、SpO2、Body Battery、活动细节、历史基线、声音事件与生活背景；来源不支持分期使用unsupported，与尚未记录not_provided区分。
+
+environment_summary包含expected_windows、observed_windows、missing_windows、missing_windows_lower_bound、count_exact、expected_seconds、covered_seconds、missing_seconds、overlap_seconds、gaps和四通道channels。同boot按真实60秒网格数应有窗口，首尾只裁时间覆盖，统计仍来自整分钟。不同boot同配置可无缝衔接；跨boot缺口无法确定网格时，expected_windows/missing_windows为null、count_exact=false，保留精确缺时长与缺窗口下界，不编造启动边界。重叠和同boot错位网格不通过。缺配置/摆位或未选多来源时configuration_changed阻塞，channels各项为null，不把混合读数相加或报成全部传感器故障。
+
+每通道保留expected_windows/valid_windows/invalid_windows、expected_count/observed_count/valid_count/missing_count和coverage_ratio；新增usable_count、effective_coverage_ratio、max_affected_span_seconds。usable_count是质量检查后可用于放行的数量，不能把源声明valid_count中的严重异常当有效；effective_coverage_ratio=usable_count/expected_count，未知为null。coverage_ratio按完整有效分钟与睡眠交集的并集计算；channel.missing_seconds表示未被严格有效分钟覆盖的时间，不是精确丢失音频秒数。声音audio_missing_seconds仅针对已观察整分钟中的已知缺秒，audio_missing_scope=whole_observed_minutes；不声称能在边缘交集中定位坏秒。所有预期计数从不可变采样配置校验，不接受设备自降expected_count来伪装完整。
+
+全局历史unknown/conflict计数不能污染一晚已完整覆盖的有效记录；本晚缺覆盖且有未知/冲突/未更新的历史时间记录时，保留unknown_environment_time_possible限制并追加unknown_environment_time阻塞；无法证明缺口来源时保守不放行，也不能将那些记录强行归入该晚。估计UTC允许参与门槛但加入clock_error_unknown；事件检测预热/检测不足只列可选项，不把完整PCM声音通道判坏。低光工程标记保留，声音不声称校准dBA。
+
+data_state为waiting_data/ready/expired_unanalyzed。当前上海日往前含今日N日是自动回查范围，默认7，范围1—31；窗口外为expired_unanalyzed，但core_ready仍保留实际判断，可能为true，绝不扩窗或自动调用模型。core_ready与阻塞missing为空相对应，warnings和可选缺项不直接否决资格。新增policy包含min_channel_coverage=0.99/max_affected_span_seconds=300；quality_state为complete/with_gaps/insufficient。历史摘要增加quality_state、policy_version和current_policy：旧审计不补造质量字段、不重算旧结论，只显示旧规则及待复查。
+
+持久化是独立显式动作：可选analysis_schema(version=1)、analysis_readiness_checks（不可变检查审计）和analysis_readiness（每晚最新检查投影）三表。analysis-prepare先创建备份并临时恢复核验，再迁移；普通启动、GET和只读检查不建表。记录包含检查结果、策略、时间、run_id、规范JSON摘要与私有source_fingerprint。检查三表schema_version仍为1，无需改变其结构；报告四表按下节独立显式迁移。旧dual-source-strict-1审计按原字段与原哈希读取，新的coverage策略必须带policy/quality_state/warnings；未知策略或错误字段拒绝，旧算法不保留为可运行分支。重新检查新增不可变记录并切换最新投影，不修改旧检查。同run_id/日期/内容重复保存幂等，内容不同拒绝；当前投影按检查时间和检查ID指向最新审计。每条载荷最多4MiB、单批至多31晚；保存前容量准入，实际写满拒绝，批次不部分成功。旧表、原始观测、检查审计不作为冗余删除。
+
+三表已经纳入SQLite及成套备份的结构、载荷摘要和引用核验；无三表的既有有效备份仍可恢复，半套/错误版本/损坏引用明确失败。持久审计没有默认自动删除策略，长期增长须计入磁盘和备份预算。
+
+检查source_fingerprint代表本次使用的稳定来源和完整性语义，排除抓取/接收/检查时间及无事实变化的索引版本。报告服务在该指纹上加入同快照30日基线的稳定来源/质量，形成报告来源指纹；两者都私有，不能与发送input_hash混用。
+
+### 状态、发布与持久化
+
+数据资格与执行分离。只有自动窗口内ready才构造发送输入；模型配置、自动开关、独立锁、容量和请求/业务预算另检查。CLI显式--date只能位于当前配置N日内，analysis-check仍可检查更旧日期。日任务释放Garmin采集锁后检查并尝试报告，不在Garmin适配器或Web GET中外呼。
+
+当前按2026-11-18用户指令使用qwen3.8-max并沿用私有URL/Key；这是模型配置变更，不改变输入/输出合同或发布门槛。配置指纹与返回模型名须核对，旧模型的连接证据不能继承到新配置；实际报告保留生成当时的模型元数据。
+
+每个上海自然日共享P1最多30个持久物理请求占位，包含合成连接和真实报告，失败/超时/中断不退还。每个night_date跨所有input_hash和执行日期累计最多10次报告尝试，历史尝试继续计数；换输入、换日或重启均不清零。优先今日，再处理窗口内最早合格夜晚，不再额外限制每天不同夜晚数量。成功发布立即停止，该夜后续自动任务跳过；达到10次仍未成功则后续预检返回blocked_attempts，没有重置CLI。可重试网络错误与结构纠错共用夜晚剩余次数及每日总额度；Retry-After≤30秒可等待，较长留待后续且不得提前；认证/权限/模型能力错误停止本轮，不通过删审计重置。最后一次失败仍保留failed及原错误码，不能以稍后的blocked_attempts掩盖本次失败。
+
+独立报告schema版本为1，四表与检查三表分别可选：
+
+| 表 | 必需内容与保护 |
+| --- | --- |
+| sleep_analysis_schema | 当前报告表版本和创建时间，部分存在/错误版本拒绝 |
+| analysis_inputs | input_id、night_date、input_hash、source_fingerprint、prompt_hash/version、schema_hash、model_ref、config_fingerprint、time_mapping_version、created_at、payload_json及payload_hash；按来源/配置组合幂等，记录不可更新/删除 |
+| analysis_attempts | attempt_id、input_id/night_date、唯一request_id、started_at/finished_at、state、安全error_code与retry_after秒数；引用输入，禁止删除，只允许running转终态 |
+| sleep_analysis_reports | night_date主键、唯一attempt_id、generated_at、payload_json/hash、model_json/hash；引用成功尝试，每晚唯一且不可更新/删除 |
+
+显式重读使用可选表 `sleep_analysis_revisions`，引用首份报告的归属日和本次独立成功尝试，同样校验输入、正文、模型元数据、摘要与外键。事务内核对预期当前报告后追加一条不可改删的修订；详情和历史读取最近提交的修订。只有新 Prompt 的显式单夜重读可发布修订，每次至多一次物理请求，计入既有预算。失败时仍展示上次成功报告。恢复核验逐份检查原报告和全部修订。
+
+尝试终态为complete、failed、discarded_input_changed、discarded_already_published或abandoned；模型原始失败正文/思维链不保存。业务请求ID仅用于关联共享预算，不公开。模型元数据长期保留实际model ID、finish_reason、白名单usage和耗时；不因共享model-runtime账本裁剪至30日而丢失。 成功结果若经过单层传输处理，可额外保存transport_normalization=json_string_envelope或single_object_array，分别表示字符串包装解析或单对象数组取出；仅允许这两个可选值，无处理时省略，既有缺该字段的合法元数据继续核验。不保存原始包装/失败响应。输入schema_hash为64位十六进制摘要，与prompt_hash及配置一起参与幂等身份/恢复校验；不保存第二份Schema文本。未知费用不编造。
+
+sleep-analysis-prepare先在线备份并临时恢复核验，再显式创建报告表；启动/GET/daily-run无隐式迁移。入库有容量准入和私有权限，输入上限24KiB、输出上限256KiB；读取/恢复重新校验结构、规范hash、业务字段和引用。无可选报告表的旧有效备份仍可恢复；半套表、错误hash、孤立引用、终态/发布矛盾或同一尝试重复发布均失败，不自动修复旧审计。
+
+调用前保存输入及预算占位/尝试，随后关闭SQLite事务才外呼。模型结果通过校验后重读ready、input_hash、私有source_fingerprint、模型配置与Prompt元数据；发布写事务内guard再次按同一连接核对，在来源不变且未有成功报告时唯一插入。生成中事实/来源/配置变化标discarded_input_changed，候选不展示；已有报告则丢弃重复候选。模型拒绝或缺失必需观察不发布；内部insufficient_input载荷仍是失败而非成功报告。结构校验按固定output_schema_*规则码分类；类型错另用固定output_type_*类别，根值区分string/array/null/scalar，仍不保存真实路径或值；领域业务校验为output_business_mismatch。失败只保留这些白名单码及安全运行元数据，不保存响应正文、校验异常文本、路径或实际值。实际失败随后触及夜晚累计尝试上限时，结果保留failed和原错误，整轮partial；调用前已经达限则blocked_attempts且不调用。
+
+发布后按当前私有来源指纹比较，变化只显示source_changed及安全原因，保留生成时输入和原结论，不重写、不再次自动调用。读取失败将变化状态设未知。单独Prompt或模型升级不称为源数据变化；已发布报告仍显示自己的版本。输入/报告/尝试现无自动删除任务，未来保留策略不得破坏至少一年证据、每晚唯一或预算审计。
 
 ### 输入、指纹与输出校验
 
-发送用JSON只在ready后构造；必需事实metric为`睡眠总时长/平均心率/夜间HRV/前日负荷/前日压力/四项环境均值`，对应机器名见[合成样例](contracts/sleep-analysis.example.json)。睡眠窗口另列；累计阶段等可选事实不得被Schema最小项数强制要求。每个指标的source/unit/period要由固定注册表校验，不能仅凭字段类型认可。
+发送用JSON只在ready后构造。核心事实metric为睡眠总时长、平均心率、夜间HRV、前日负荷/压力及四项环境均值；机器名、单位/来源/周期唯一注册在domain/sleep_features.py。可选纳入有效阶段累计、评分、晨起Body Battery、步数、环境min/max/声音峰值。源活动标题、姓名/GPS、身份、URL/Key与自由文本不进入输入；数值由程序计算而非模型计算。
 
-F类事实、T类分段、E类事件ID在快照内唯一；外发只给匿名配置段标识，不给设备ID。可选环境分段仅由通过门槛的记录构造，保留有效/预期分钟数；可选事件最多取8个有效摘要（优先峰值、并列按时间，最终按时间排列），遗漏时`event_status=context_truncated`并加入限制，空数组不能默认解释为没有声音事件。`none_detected`只在事件检测覆盖完整且确实没有事件时允许。
+睡眠/心率/HRV基线各自使用D−30…D−1来源日，过滤不合法、陈旧或来源错误的值，至少7个有效日才提供均值及本晚差值；不足则保留该指标valid_n、expected_n=30及null，不混用不同指标分母。负荷直接复用D−1与D−31…D−2完整30日比较，缺天、陈旧或基线为零不输出百分比。综合评分/Body Battery标composite_metrics_not_independent，不能作为独立原因。
 
-输入最多24KiB UTF-8 JSON（紧凑序列化），事实最多128、分段最多96、事件最多8；这些是总预算内的各项上限，不能同时塞满再忽视字节限额。输出最多8条观察、3条假设、3条建议；不用大模型计算基础差值/覆盖率。完整Schema为设计权威来源，实施时移入包内并让文档引用同一份，禁止手工维护两套不一致结构。
+环境均值来自当前合格来源的有效样本，温湿光按valid_count加权，声音按完整有效秒在能量域聚合，不对dB算术平均。整分钟统计与被睡眠窗口裁剪的时间覆盖分别保留，边缘分钟不假装能精确拆出内部样本。只有数值/计数/单位/严重质量检查通过的样本参与；缺少的样本不插值补0。
 
-`input_hash=sha256(规范JSON)`：从发送对象移除`input_hash`、`data_cutoff_at`及随当前日期变化的展示标记`is_provisional`，规范化为`ensure_ascii=false, sort_keys=true, separators=(",",":"), allow_nan=false`的UTF-8；快照保留这些审计字段但不让单纯过午夜触发source_changed。完整性/结构版本仍参与hash。模型配置/Prompt/映射版本通过私有输入记录另存并参与发布时一致性核对。改变观察/质量/来源日必须改变hash，单纯再次读取的时间不改变hash。哈希用于一致性，不能绕过night唯一报告。
+输入completeness包含policy_version/policy、quality_state=complete/with_gaps、garmin_core_complete=true、environment_eligible=true、environment_expected_windows/environment_observed_windows、time_quality、四通道channels、warnings和warning_interval_scope。每通道保留count_unit、expected_windows/valid_windows/invalid_windows、expected_count/observed_count/valid_count/usable_count、effective_coverage_ratio、coverage_ratio及max_affected_span_seconds。invalid_windows只计已观察但不完全有效的分钟，valid_windows+invalid_windows=observed_windows，可小于expected_windows；未收到分钟仍进入采样预期分母。资格不使用environment_core_complete=true冒充全部完整。
 
-另存仅供程序核验的`source_fingerprint`，**不发送给模型**，即使当前缺项而不能构造ready输入也必须能计算。它采用相同规范JSON/SHA-256算法，输入为稳定排序的私有来源对象：来源日与睡眠窗口、选定设备/不可变配置/摆位身份、报告所用白名单事实及基线的值/单位/来源/质量、映射后时间、核心完整性和规范缺项列表。缺项中排除last_checked_at，身份、缺失和无效用明确值表示；不纳入接收/读取时间、请求ID、重抓次数、原始响应无关字段、Prompt/模型配置、is_provisional或不影响映射结果的内部版本号。
+外发warnings仅保留code/source/metric/window_start/window_end/expected/observed/recoverability；source固定environment，原因限missing_environment_minutes/invalid_channel。省略date、last_checked_at和来源身份，warning_interval_scope固定affected_minute_ranges_clipped_to_sleep；受影响范围不定位缺秒。with_gaps保留warnings及sampling_gaps_present，complete没有缺采warning且所有采样有效。
 
-发布前重新检查ready并同时比较`input_hash`、`source_fingerprint`及私有配置版本；生成中变成缺项/无效或换了来源，即使汇总数值相同，也废弃候选。发布后用当前来源指纹与报告保存值比较，变成缺项也标source_changed并列原因，仍保留报告。Prompt或模型升级本身不标来源变化；时间索引单纯重建而映射结果相同也不标。来源指纹用于保真，不能把设备身份外发或授权自动修订报告。
+F类事实、T类15分钟分段、E类事件ID在输入内唯一，均为固定匿名引用。分段按通道coverage保留同口径统计，允许有效覆盖低于99%和缺值null，不重复应用整夜门槛。可选事件最多8个可信声音摘要，优先峰值、同峰按时间，再按时间展示；缺摘要、检测未完整、stored/dropped计数未知或不一致时不能标none_detected。合并包络不表示全时段持续声音，不把摘要条数当声源/觉醒数。跨睡眠边界无法精确裁掉active_seconds的事件不编造裁剪值。
 
-Schema之外还须检查：night/hash相同、必需metric齐全且数值非空、ID唯一、valid≤expected、核心环境窗口数相等、时间先后/窗口边界、所有引用确实存在、required_limitations全部保留。完整报告summary必须至少一个有效引用，observations覆盖sleep/body_signals/previous_day/environment四类；拒绝对象观察/假设/建议必须为空。禁止未引用数值、改单位、把null当0和未知变量当不存在；自然语言语义仍需人工抽查，不能声称Schema自动保证推断正确。
+输入最多24KiB UTF-8紧凑JSON，事实最多128、分段最多96、事件最多8。超预算先移除可选分段，再移除非核心背景，分别加timeline_omitted_for_budget/optional_context_omitted_for_budget；不删核心、采样分母、warnings或限制，仍超限则blocked_input_budget。内部报告上限保持8个观测、3个假设/建议；当前模型返回收紧为4—6个观测、至多2个假设/建议，各引用数组1—6个唯一ID；消息总量32KiB、完整请求64KiB、输出4096 token/响应256KiB另受模型层限制。
 
-统计、摘要及查询都复用同一领域函数，避免看板与模型看到不同分母。基线的valid_n/expected_n按每个baseline事实记录，不能用一个全局夜数掩盖不同指标缺失。背景/基线规则见[LLM方案](plans/llm.md)，训练负荷仍复用本契约既有定义。
+唯一[system Prompt](../src/sleepscape/resources/sleep-analysis-system.txt)与[Schema](../src/sleepscape/resources/sleep-analysis.schema.json)在resources/随包分发。同一文件内`model_output`是当前模型四字段合同，`output`是内部完整报告合同；没有重复资源。system动态附加model_output，user包含白名单证据JSON及程序固定生成/纠错要求。当前显式json_object仅保证JSON语法；显式json_schema模式才将同一model_output按aliyun-compatible-1派生发送投影，不自动切换。
+
+model_output仅含summary、observations、hypotheses、actions。模型填写文字、类别/因素、有效证据ID及替代解释/观察建议，不回显日期/hash/quality/limitations/status/evidence_level。resources.validate_model_output先按模型合同校验，再由纯领域函数用已核验输入组装完整报告：固定sleep-output-1、日期/hash/质量与全部限制来自输入、status=complete、观察/假设等级limited。完整output和领域规则仍再次校验；程序不能补写正文/引用或删减超额条目。缺类、空观察、无效证据或不合规正文均不发布。原存储、看板与恢复的完整报告格式保持兼容。
+
+传输规范化只允许两个互斥单步：根字符串严格再解析一次为对象，或单元素且该元素为对象的根数组解出对象；之后继续全部校验。重复键/非有限数值、Markdown、空/多元素/嵌套数组、字符串与数组互相包装均不修复。最大输入加纠错的消息预算有回归；schema_hash覆盖唯一Schema文件内各合同，prompt_hash覆盖唯一Prompt，response_mode/profile进入config_fingerprint。[合成样例](contracts/sleep-analysis.example.json)展示内部报告，不代表实际模型返回。
+
+input_hash=sha256(规范JSON)：移除input_hash/data_cutoff_at/is_provisional，采用ensure_ascii=false、sort_keys=true、separators=(",",":"), allow_nan=false的UTF-8。hash包含所发事实、质量/策略、通道计数/分母、warnings、限制和基线，不因再次读取时间变化而变。存储另对包含全部字段的payload原文计算payload_hash，用于完整性核验；不能用重算语义hash绕过字段/数值校验或每晚唯一。
+
+报告source_fingerprint不外发模型，覆盖当前检查的稳定来源身份/质量/观测及同快照30日基线日期、睡眠来源和核心卡片；即使当前不ready也可计算。排除抓取/接收/检查时间及不改变映射的索引元数据。来源变化比较不依赖模型输入必须可生成，不能把缺数据解释为与旧报告一致。
+
+输出schema_version固定sleep-output-1；含summary、observations、hypotheses、actions、limitations及input_quality_state，日期/hash/quality须对应输入。每个evidence_ids数组内部唯一；limitations由程序按原顺序完整复制required_limitations，保持不增加、不遗漏、不重复，本地继续强制唯一与集合相同。成功报告必须有四类观测、有效证据ID、对应类别/假设因素依据、保留全部限制，不能引用null不可用事实；with_gaps须在概况或环境观察说明缺采。报告complete仅表示生成完成，不改写为100%采样完整。insufficient_input必须空观察/假设/建议，并按失败处理。
+
+Schema之外校验必需事实、白名单单位/来源/周期、计数关系/比率、基线分母及派生差值、时间边界、ID唯一、引用和字节预算。数值直接显示生成时证据卡，模型文字不写阿拉伯数字/具体时间/自行换算比例；禁止明显凭据、外链、注入和医疗处置文本。有限规则不能证明所有自然语言因果/方向判断，真实报告仍需对照证据人工核验，不将观测升级为诊断或确定因果。

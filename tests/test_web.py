@@ -42,7 +42,7 @@ def test_local_empty_dashboard_has_safe_state_and_never_creates_a_database(setti
         assert response.headers["x-content-type-options"] == "nosniff"
         assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
         assert browser.get("/api/v1/nights/2026-01-01").status_code == 404
-        assert browser.get("/").status_code == 200
+        assert browser.get("/sleep").status_code == 200
         assert browser.get("/static/app.js").status_code == 200
         assert browser.get("/openapi.json").status_code == 404
         assert browser.get("/docs").status_code == 404
@@ -54,16 +54,16 @@ def test_local_empty_dashboard_has_safe_state_and_never_creates_a_database(setti
 
 def test_nonlocal_peer_and_proxy_headers_cannot_bypass_local_only_access(settings):
     with client(settings, peer="192.0.2.4") as browser:
-        assert browser.get("/").status_code == 403
+        assert browser.get("/sleep").status_code == 403
         assert browser.get("/api/v1/status").status_code == 403
         assert browser.get("/health").status_code == 200
     with client(settings) as browser:
-        assert browser.get("/", headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
-        assert browser.get("/", headers={"Host": "evil.invalid"}).status_code == 400
-        assert browser.get("/", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+        assert browser.get("/sleep", headers={"X-Forwarded-For": "127.0.0.1"}).status_code == 403
+        assert browser.get("/sleep", headers={"Host": "evil.invalid"}).status_code == 400
+        assert browser.get("/sleep", headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
         assert (
             browser.get(
-                "/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+                "/sleep", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
             ).status_code
             == 200
         )
@@ -97,20 +97,22 @@ def test_password_protects_pages_assets_and_data_and_rotation_invalidates_cache(
     assert path.stat().st_mode & 0o777 == 0o600
     settings.web_auth_file = path
     with client(settings, peer="192.0.2.4", base_url="https://localhost") as browser:
-        for url in ("/", "/static/app.js", "/api/v1/status"):
+        for url in ("/sleep", "/static/app.js", "/api/v1/status"):
             response = browser.get(url)
             assert response.status_code == 401
             assert response.headers["www-authenticate"].startswith("Basic")
-        assert browser.get("/", headers=basic("wrong", password)).status_code == 401
-        assert browser.get("/", headers={"Authorization": "Basic invalid!"}).status_code == 401
-        assert browser.get("/", headers=basic("sleepscape", password)).status_code == 200
+        assert browser.get("/sleep", headers=basic("wrong", password)).status_code == 401
+        assert browser.get("/sleep", headers={"Authorization": "Basic invalid!"}).status_code == 401
+        assert browser.get("/sleep", headers=basic("sleepscape", password)).status_code == 200
         assert (
             browser.get("/api/v1/status", headers=basic("sleepscape", password)).status_code == 200
         )
         save_password(path, "sleepscape", "another-synthetic-password")
-        assert browser.get("/", headers=basic("sleepscape", password)).status_code == 401
+        assert browser.get("/sleep", headers=basic("sleepscape", password)).status_code == 401
         assert (
-            browser.get("/", headers=basic("sleepscape", "another-synthetic-password")).status_code
+            browser.get(
+                "/sleep", headers=basic("sleepscape", "another-synthetic-password")
+            ).status_code
             == 200
         )
 
@@ -121,16 +123,16 @@ def test_password_is_not_accepted_over_remote_plain_http_or_spoofed_proto(settin
     settings.web_auth_file = path
     credentials = basic("sleepscape", "synthetic-long-password")
     with client(settings, peer="192.0.2.4") as browser:
-        assert browser.get("/", headers=credentials).json() == {"error": "https_required"}
+        assert browser.get("/sleep", headers=credentials).json() == {"error": "https_required"}
         assert (
-            browser.get("/", headers={**credentials, "X-Forwarded-Proto": "https"}).status_code
+            browser.get("/sleep", headers={**credentials, "X-Forwarded-Proto": "https"}).status_code
             == 403
         )
-        assert "www-authenticate" not in browser.get("/").headers
+        assert "www-authenticate" not in browser.get("/sleep").headers
     with client(settings) as browser:
-        assert browser.get("/", headers=credentials).status_code == 200
+        assert browser.get("/sleep", headers=credentials).status_code == 200
         assert (
-            browser.get("/", headers={**credentials, "X-Forwarded-Proto": "http"}).status_code
+            browser.get("/sleep", headers={**credentials, "X-Forwarded-Proto": "http"}).status_code
             == 403
         )
 
@@ -178,3 +180,63 @@ def test_world_readable_password_file_is_rejected(settings, tmp_path):
     settings.web_auth_file = path
     with pytest.raises(ValueError, match="web_auth_configuration_invalid"):
         create_app(settings)
+
+
+def test_sleep_entry_and_persistent_session(settings, tmp_path, monkeypatch):
+    from sleepscape.web.security import SESSION_COOKIE, SESSION_SECONDS
+
+    path = tmp_path / ".private" / "dashboard.json"
+    save_password(path, "sleepscape", "synthetic-long-password")
+    settings.web_auth_file = path
+    with client(settings, base_url="https://localhost") as browser:
+        assert browser.get("/sleep").status_code == 401
+        response = browser.get("/sleep", headers=basic("sleepscape", "synthetic-long-password"))
+        assert response.status_code == 200
+        cookie = response.headers["set-cookie"]
+        for flag in ("HttpOnly", "Secure", "SameSite=lax", "Path=/", "Max-Age=2592000"):
+            assert flag in cookie
+        token = browser.cookies.get(SESSION_COOKIE)
+    # A fresh app/browser has no Basic authentication cache; the cookie survives restart.
+    with client(settings, base_url="https://localhost") as browser:
+        browser.cookies.set(SESSION_COOKIE, token)
+        assert browser.get("/sleep/").status_code == 200
+        assert browser.get("/api/v1/status").status_code == 200
+        assert "set-cookie" not in browser.get("/sleep").headers
+        assert (
+            browser.get(
+                "/sleep", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+            ).status_code
+            == 200
+        )
+        assert (
+            browser.get("/api/v1/status", headers={"Sec-Fetch-Site": "cross-site"}).status_code
+            == 403
+        )
+        browser.cookies.set(SESSION_COOKIE, token[:-1] + ("a" if token[-1] != "a" else "b"))
+        assert browser.get("/sleep").status_code == 401
+        browser.cookies.set(SESSION_COOKIE, token)
+        with monkeypatch.context() as patch:
+            patch.setattr("sleepscape.web.security.time.time", lambda: int(token.split(".")[0]) + 1)
+            assert browser.get("/sleep").status_code == 401
+        save_password(path, "sleepscape", "new-synthetic-password")
+        assert browser.get("/sleep").status_code == 401
+        assert SESSION_SECONDS == 2592000
+
+
+def test_root_entry_is_removed_even_with_session(settings, tmp_path):
+    path = tmp_path / ".private" / "dashboard.json"
+    save_password(path, "sleepscape", "synthetic-long-password")
+    settings.web_auth_file = path
+    with client(settings, base_url="https://localhost") as browser:
+        response = browser.get("/")
+        assert response.status_code == 404
+        assert "www-authenticate" not in response.headers
+        assert "location" not in response.headers
+        assert (
+            browser.get(
+                "/sleep", headers=basic("sleepscape", "synthetic-long-password")
+            ).status_code
+            == 200
+        )
+        assert browser.get("/?view=night").status_code == 404
+        assert browser.get("/sleep").status_code == 200

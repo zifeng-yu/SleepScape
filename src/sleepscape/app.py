@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from sleepscape import __version__
 from sleepscape.config import Settings
+from sleepscape.domain.dashboard_dates import NightBeforeDisplayStart, visible_start
 from sleepscape.web.device_security import INGEST_PATH, DeviceGate
 from sleepscape.web.security import SECURITY_HEADERS, AccessGate
 
@@ -29,6 +30,8 @@ def _day(value: date) -> date:
 def _query(operation, *args, **kwargs):
     try:
         return operation(*args, **kwargs)
+    except NightBeforeDisplayStart:
+        raise HTTPException(404, "night_before_dashboard_start") from None
     except Exception as exc:
         logging.getLogger("sleepscape").warning("dashboard_query_failed [%s]", type(exc).__name__)
         raise HTTPException(503, "local_data_unavailable") from None
@@ -57,6 +60,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response = await gate.check(request)
         if response is None:
             response = await call_next(request)
+        gate.attach_session(request, response)
         response.headers.update(SECURITY_HEADERS)
         return response
 
@@ -98,20 +102,58 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 receive, settings, request.state.environment_device_id, batch
             )
         except EnvironmentError as exc:
-            raise HTTPException(exc.status, str(exc)) from None
+            headers = {"Retry-After": "60"} if exc.status == 503 else None
+            raise HTTPException(exc.status, str(exc), headers=headers) from None
         except Exception as exc:
             logging.getLogger("sleepscape").warning(
                 "environment_ingest_failed [%s]", type(exc).__name__
             )
-            raise HTTPException(503, "environment_storage_unavailable") from None
+            raise HTTPException(
+                503, "environment_storage_unavailable", headers={"Retry-After": "60"}
+            ) from None
 
-    @app.get("/", include_in_schema=False)
+    @app.get("/sleep", include_in_schema=False)
+    @app.get("/sleep/", include_in_schema=False)
     def dashboard():
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/v1/status")
     def status():
         return {**_query(service().status), "demo": settings.demo}
+
+    @app.get("/api/v1/metrics")
+    def metrics():
+        from sleepscape.domain.metrics import metric_registry
+
+        return metric_registry()
+
+    @app.get("/api/v1/environment/timeline")
+    def environment_timeline_view(
+        start: Annotated[datetime, Query(alias="from")],
+        end: Annotated[datetime, Query(alias="to")],
+        max_points: Annotated[int, Query(ge=2, le=2000)] = 2000,
+    ):
+        from sleepscape.services.environment_dashboard import environment_timeline
+
+        if start.tzinfo is None or end.tzinfo is None:
+            raise HTTPException(422, "timeline_requires_explicit_timezone")
+        if not timedelta(0) < end - start <= timedelta(hours=48):
+            raise HTTPException(422, "timeline_window_requires_up_to_48_hours")
+        _day(start.date())
+        _day(end.date())
+        return {
+            "contract_version": "1",
+            "timezone": settings.timezone,
+            "window": {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "default_start": start.isoformat(),
+                "default_end": end.isoformat(),
+            },
+            "stages": [],
+            "quality": ["environment_window_not_sleep"],
+            **_query(environment_timeline, settings, start, end, max_points),
+        }
 
     @app.get("/api/v1/nights")
     def nights(
@@ -126,7 +168,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             end = (
                 date.fromisoformat(latest)
                 if latest
-                else datetime.now(ZoneInfo(settings.timezone)).date()
+                else visible_start(
+                    datetime.now(ZoneInfo(settings.timezone)).date(), settings.dashboard_start_date
+                )
             )
         start = start or end - timedelta(days=29)
         _day(start)
@@ -165,6 +209,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result is None:
             raise HTTPException(404, "night_not_found")
         return result
+
+    @app.get("/api/v1/nights/{day}/analysis")
+    def analysis(day: date):
+        from sleepscape.services.analysis_views import analysis_view
+
+        return _query(analysis_view, settings, _day(day))
 
     @app.get("/health", tags=["service"])
     def health() -> dict[str, str]:

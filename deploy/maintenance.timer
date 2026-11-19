@@ -1,0 +1,12 @@
+# Template only; independent from the 09:00 Garmin daily collector.
+[Unit]
+Description=SleepScape maintenance daily at 04:00 Shanghai time
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=maintenance.service
+
+[Install]
+WantedBy=timers.target

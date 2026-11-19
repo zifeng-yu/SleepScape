@@ -14,6 +14,7 @@ from sleepscape.domain.environment import (
     content_hash,
     validate_light_profile,
 )
+from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 ENVIRONMENT_TABLES = (
     "environment_schema",
@@ -309,6 +310,10 @@ def _append(connection, table: str, identity: dict, fields: dict, payload: dict,
 def ingest(data_dir: Path, device_id: str, batch: EnvironmentBatch) -> dict:
     if batch.device_id != device_id:
         raise EnvironmentError("device_binding_mismatch", 403)
+    try:
+        require_capacity(data_dir, "write")
+    except CapacityError as exc:
+        raise EnvironmentError(exc.code, 503) from None
     received = _now()
     ack = {
         "schema_version": 1,
@@ -421,9 +426,27 @@ def ingest(data_dir: Path, device_id: str, batch: EnvironmentBatch) -> dict:
                     statuses.count("duplicate"),
                 ),
             )
+            # The optional projection is installed only by an explicit migration.
+            # Facts, index revision and ACK become durable in the same commit.
+            from sleepscape.storage.environment_index import index_available, refresh_boot
+
+            if index_available(connection):
+                refresh_boot(
+                    connection,
+                    device_id,
+                    batch.boot_id,
+                    new_records=[
+                        (item["record_type"], item["seq"])
+                        for item in ack["records"]
+                        if item["status"] == "accepted"
+                    ],
+                    accepted_count=statuses.count("accepted"),
+                )
             connection.commit()
-        except Exception:
+        except Exception as exc:
             connection.rollback()
+            if is_disk_full(exc):
+                raise EnvironmentError("storage_capacity_critical", 503) from None
             raise
     _secure(data_dir)
     return ack

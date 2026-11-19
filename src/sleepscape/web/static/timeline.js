@@ -3,10 +3,55 @@ import { el, add } from "./dom.js";
 import {
     number,
     numericText,
-    COLORS,
-    METRIC_NAMES,
     seriesLabel,
 } from "./format.js";
+import { metricInfo, metricItems, metricColor, metricLabel } from "./metrics.js";
+import { environmentPointLines } from "./environment.js";
+
+function roundedStep(value) {
+    const magnitude = 10 ** Math.floor(Math.log10(Math.max(value, 0.000001)));
+    const normalized = value / magnitude;
+    return ([1, 2, 2.5, 5, 10].find((step) => step >= normalized) || 10) * magnitude;
+}
+
+function axisUnit(unit) {
+    return { bpm: "次/分（bpm）", ms: "毫秒（ms）", points: "分" }[unit] || unit || "";
+}
+
+function valueAxis(values, definition) {
+    const precision = definition?.precision || 0;
+    const minimumStep = 10 ** -precision;
+    const low = values.length ? Math.min(...values) : 0;
+    const high = values.length ? Math.max(...values) : 1;
+    const padding = Math.max(minimumStep, (high - low) * 0.12);
+    let min = number(definition?.axis.min) ? definition.axis.min : low - padding;
+    let max = number(definition?.axis.max) ? definition.axis.max : high + padding;
+    const step = Math.max(minimumStep, roundedStep((max - min) / 3));
+    if (!number(definition?.axis.min)) min = Math.floor(min / step) * step;
+    if (!number(definition?.axis.max)) max = Math.ceil(max / step) * step;
+    if (max <= min) max = min + step;
+    const ticks = [];
+    for (let value = Math.ceil(min / step) * step; value <= max + step / 100; value += step)
+        ticks.push(Math.abs(value) < step / 100 ? 0 : value);
+    return { min, max, ticks, precision };
+}
+
+function timeTicks(range, time, plotWidth) {
+    const count = Math.max(3, Math.floor(plotWidth / 90));
+    const target = (range[1] - range[0]) / count;
+    const step = [1, 5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440]
+        .map((minutes) => minutes * 60000).find((value) => value >= target) || 86400000;
+    const wallStart = Date.parse(`${time.localInput(range[0])}:00Z`);
+    const wallEnd = Date.parse(`${time.localInput(range[1])}:00Z`);
+    const result = [range[0]];
+    for (let wall = Math.ceil(wallStart / step) * step; wall < wallEnd; wall += step) {
+        const instant = time.localToUTC(new Date(wall).toISOString().slice(0, 16));
+        const x = (instant - range[0]) / (range[1] - range[0]) * plotWidth;
+        if (Number.isFinite(instant) && x >= 44 && x <= plotWidth - 54) result.push(instant);
+    }
+    result.push(range[1]);
+    return result;
+}
 
 export class TimelineChart {
     constructor(
@@ -26,38 +71,52 @@ export class TimelineChart {
         this.interaction = "select";
         this.pointer = null;
         this.drag = null;
+        this.pinned = false;
         this.canvas = el("canvas", "chart-canvas");
         this.canvas.tabIndex = 0;
         this.canvas.setAttribute("role", "img");
         this.canvas.setAttribute(
             "aria-label",
-            "共享时间轴散点图。加减键缩放，左右键平移，Home恢复整夜。每个点代表真实观测，无数据处留空。",
+            "共享时间轴观测图。加减键缩放，左右键平移，Home恢复整夜。Garmin为真实观测点，环境为真实分钟窗口；无数据处留空。",
         );
         this.tooltip = el("div", "chart-tooltip");
         this.tooltip.hidden = true;
-        const description = el(
+        this.tooltip.setAttribute("role", "region");
+        this.tooltip.setAttribute("aria-label", "观测详情");
+        this.tooltip.tabIndex = -1;
+        this.tooltip.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                this.unpin();
+            }
+        });
+        this.description = el(
             "p",
             "sr-only",
-            "心率、HRV、血氧与Body Battery按真实UTC时间对齐。用指针或触摸选点，显示观测时刻和距离光标的时间差；没有邻近观测时不显示估算值。",
+            "身体指标与环境指标按真实UTC时间对齐，环境不同配置与启动周期分段。用指针或触摸选点，查看原始观测时刻或分钟窗口、覆盖与质量。环境缺口不使用相邻窗口代替。",
         );
-        add(shell, this.canvas, this.tooltip, description);
+        this.description.id = "chart-axis-description";
+        this.canvas.setAttribute("aria-describedby", this.description.id);
+        const guide = el("div", "chart-reading-guide");
+        guide.title = "相对声音以dBFS表示，负值越接近0越响；未校准声压，不能按dBA解读。";
+        add(guide,
+            el("span", "", "每行独立纵轴，单位见标题"),
+            el("span", "", "淡紫：睡眠时段 · 竖虚线：配置或重启分界"));
+        add(shell, guide, this.canvas, this.tooltip, this.description);
         this.range = [
             Date.parse(data.window.start),
             Date.parse(data.window.end),
         ];
-        this.series = (data.series || []).map((s) => ({
-            ...s,
-            valid: (s.points || [])
-                .filter(
-                    (p) =>
-                        number(p.value) &&
-                        Number.isFinite(Date.parse(p.timestamp)),
-                )
-                .map((p) => ({ ...p, t: Date.parse(p.timestamp) }))
-                .sort((a, b) => a.t - b.t),
-        }));
+        this.series = (data.series || []).map((s) => {
+            const points = (s.points || [])
+                .filter((p) => Number.isFinite(Date.parse(p.timestamp)))
+                .map((p) => ({ ...p, t: Date.parse(p.timestamp),
+                    end: Date.parse(p.window_end) }))
+                .sort((a, b) => a.t - b.t);
+            return { ...s, observations: points, valid: points.filter((p) => number(p.value)) };
+        });
         this.eventHits = [];
-        this.rows = ["heart_rate", "hrv", "spo2", "body_battery"];
+        this.rows = [];
         this.canvas.addEventListener("pointerdown", (event) =>
             this.down(event),
         );
@@ -71,7 +130,7 @@ export class TimelineChart {
             this.draw();
         });
         this.canvas.addEventListener("pointerleave", () => {
-            if (!this.drag) {
+            if (!this.drag && !this.pinned) {
                 this.pointer = null;
                 this.draw();
             }
@@ -127,6 +186,7 @@ export class TimelineChart {
         this.pointer = p;
     }
     move(event) {
+        if (this.pinned && !this.drag) return;
         const p = this.position(event);
         this.pointer = p;
         if (this.drag) {
@@ -154,6 +214,7 @@ export class TimelineChart {
                 (h) => Math.abs(h.x - p.x) < 11 && Math.abs(h.y - p.y) < 13,
             );
             if (hit) this.onEventSelect(hit.event);
+            else this.pinned = true;
             this.pointer = p;
             this.draw();
             return;
@@ -166,6 +227,7 @@ export class TimelineChart {
         else this.commit(this.range);
     }
     commit(range) {
+        this.pinned = false;
         if (range[1] - range[0] < 300000) {
             const center = (range[0] + range[1]) / 2;
             range = [center - 150000, center + 150000];
@@ -204,6 +266,7 @@ export class TimelineChart {
         else if (event.key === "-" || event.key === "_") this.zoom(1.35);
         else if (event.key === "Home") this.onReset();
         else if (event.key === "Escape") {
+            this.pinned = false;
             this.pointer = null;
             this.drag = null;
             this.draw();
@@ -214,14 +277,24 @@ export class TimelineChart {
             this.commit(this.range.map((t) => t + shift));
         }
     }
+    unpin() {
+        this.pinned = false;
+        this.pointer = null;
+        this.draw();
+        this.canvas.focus({ preventScroll: true });
+    }
     draw() {
+        this.tooltip.classList.toggle("is-pinned", this.pinned);
+        this.rows = metricItems().filter((metric) => this.series.some((series) =>
+            series.metric === metric.id && !this.hidden.has(series.id),
+        )).map((metric) => metric.id);
         this.width = Math.max(250, this.shell.clientWidth);
         this.left = this.width < 500 ? 55 : 76;
         this.plotWidth = this.width - this.left - 14;
-        const rowHeight = this.width < 500 ? 84 : 90,
-            top = 36,
-            bottom = 35;
-        this.height = top + this.rows.length * rowHeight + bottom;
+        const rowHeight = this.width < 500 ? 132 : 126,
+            top = 76,
+            bottom = 49;
+        this.height = top + Math.max(1, this.rows.length) * rowHeight + bottom;
         const ratio = Math.min(window.devicePixelRatio || 1, 3);
         this.canvas.width = Math.round(this.width * ratio);
         this.canvas.height = Math.round(this.height * ratio);
@@ -229,167 +302,207 @@ export class TimelineChart {
         const ctx = this.canvas.getContext("2d");
         ctx.scale(ratio, ratio);
         ctx.clearRect(0, 0, this.width, this.height);
-        ctx.font =
-            '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
         const startSleep = Date.parse(this.sleep.start_at),
-            endSleep = Date.parse(this.sleep.end_at);
-        if (Number.isFinite(startSleep) && Number.isFinite(endSleep)) {
-            const x1 = Math.max(this.left, this.toX(startSleep)),
-                x2 = Math.min(this.width - 14, this.toX(endSleep));
-            if (x2 > x1) {
-                ctx.fillStyle = "#f8f6fc";
-                ctx.fillRect(x1, top, x2 - x1, rowHeight * this.rows.length);
+            endSleep = Date.parse(this.sleep.end_at),
+            ticks = timeTicks(this.range, this.time, this.plotWidth),
+            descriptions = [];
+        this.axes = [];
+        this.rows.forEach((metric, index) => {
+            const definition = metricInfo(metric),
+                y = top + index * rowHeight,
+                plotTop = y + 36,
+                plotBottom = y + rowHeight - 16,
+                group = this.series.filter((series) => series.metric === metric && !this.hidden.has(series.id)),
+                points = group.flatMap((series) => series.valid.filter((point) => series.source === "environment"
+                    ? point.t < this.range[1] && point.end > this.range[0]
+                    : point.t >= this.range[0] && point.t <= this.range[1])),
+                values = points.flatMap((point) => [point.value, point.min, point.max].filter(number)),
+                axis = valueAxis(values, definition),
+                toY = (value) => plotTop + ((axis.max - value) / (axis.max - axis.min)) * (plotBottom - plotTop);
+            this.axes.push({ metric, ...axis, plotTop, plotBottom });
+            ctx.fillStyle = index % 2 ? "#f9fbfc" : "#ffffff";
+            ctx.fillRect(0, y, this.width, rowHeight);
+            if (Number.isFinite(startSleep) && Number.isFinite(endSleep)) {
+                const x1 = Math.max(this.left, this.toX(startSleep)),
+                    x2 = Math.min(this.width - 14, this.toX(endSleep));
+                if (x2 > x1) {
+                    ctx.fillStyle = "#f0edf8";
+                    ctx.fillRect(x1, plotTop, x2 - x1, plotBottom - plotTop);
+                }
             }
-        }
-        const ticks = this.width < 500 ? 4 : 6;
-        for (let i = 0; i <= ticks; i++) {
-            const x = this.left + (this.plotWidth * i) / ticks,
-                instant =
-                    this.range[0] +
-                    ((this.range[1] - this.range[0]) * i) / ticks;
-            ctx.strokeStyle = "#edf1f4";
-            ctx.setLineDash([2, 4]);
+            // A full-width header keeps long metric names and their units out of the value axis.
+            const title = `${metricLabel(metric)} · ${axisUnit(definition?.unit)}`;
+            ctx.fillStyle = metricColor(metric);
+            ctx.fillRect(1, y + 10, 3, 15);
+            ctx.textAlign = "left";
+            ctx.font = '600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillStyle = "#304858";
+            ctx.fillText(title, 10, y + 22, this.width - 70);
+            ctx.textAlign = "right";
+            ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillStyle = "#647684";
+            ctx.fillText(definition?.source === "environment" ? "环境" : "手表", this.width - 14, y + 22);
+            for (const instant of ticks) {
+                const x = this.toX(instant);
+                ctx.strokeStyle = "#e2e8ed";
+                ctx.setLineDash([2, 4]);
+                ctx.beginPath();
+                ctx.moveTo(x, plotTop);
+                ctx.lineTo(x, plotBottom);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+            if (points.length) {
+                for (const value of axis.ticks) {
+                    const tickY = toY(value);
+                    ctx.strokeStyle = "#dfe6eb";
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(this.left, tickY);
+                    ctx.lineTo(this.width - 14, tickY);
+                    ctx.stroke();
+                    ctx.textAlign = "right";
+                    ctx.fillStyle = "#526b7b";
+                    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                    ctx.fillText(numericText(value, axis.precision), this.left - 8, tickY + 4);
+                }
+                descriptions.push(`${title}，纵轴 ${numericText(axis.min, axis.precision)} 至 ${numericText(axis.max, axis.precision)}`);
+            } else {
+                ctx.textAlign = "left";
+                ctx.fillStyle = "#6a7f8b";
+                ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.fillText("此时间范围暂无有效观测", this.left + 9, (plotTop + plotBottom) / 2 + 4);
+                descriptions.push(`${title}，此时间范围暂无有效观测`);
+            }
+            ctx.save();
             ctx.beginPath();
-            ctx.moveTo(x, top);
-            ctx.lineTo(x, this.height - bottom);
+            ctx.rect(this.left, plotTop - 1, this.plotWidth, plotBottom - plotTop + 2);
+            ctx.clip();
+            for (const series of group) {
+                for (const point of series.valid) {
+                    if (series.source === "environment") {
+                        if (!Number.isFinite(point.end) || point.t >= this.range[1] || point.end <= this.range[0]) continue;
+                        const x1 = Math.max(this.left, this.toX(point.t)),
+                            x2 = Math.min(this.width - 14, this.toX(point.end)),
+                            middle = (x1 + x2) / 2;
+                        ctx.strokeStyle = metricColor(metric);
+                        ctx.globalAlpha = point.channel_state === "partial" ? 0.5 : 0.95;
+                        if (number(point.min) && number(point.max) && point.min !== point.max) {
+                            ctx.lineWidth = 1;
+                            ctx.beginPath();
+                            ctx.moveTo(middle, toY(point.min));
+                            ctx.lineTo(middle, toY(point.max));
+                            ctx.stroke();
+                        }
+                        // Each stroke remains a real minute window, never a bridge across a gap or boot.
+                        ctx.lineWidth = series.series_type === "minute_peak" ? 1.2 : 2;
+                        ctx.setLineDash(series.series_type === "minute_peak" ? [2, 2] : []);
+                        ctx.beginPath();
+                        ctx.moveTo(x1, toY(point.value));
+                        ctx.lineTo(Math.max(x1 + 0.5, x2), toY(point.value));
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.lineWidth = 1;
+                        ctx.globalAlpha = 1;
+                    } else if (point.t >= this.range[0] && point.t <= this.range[1]) {
+                        ctx.fillStyle = metricColor(metric);
+                        ctx.globalAlpha = 0.9;
+                        ctx.beginPath();
+                        ctx.arc(this.toX(point.t), toY(point.value),
+                            series.series_type === "hourly_average" || series.valid.length < 40 ? 3.5 : 1.8,
+                            0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.globalAlpha = 1;
+                    }
+                }
+            }
+            ctx.restore();
+            ctx.strokeStyle = "#e5ebef";
+            ctx.beginPath();
+            ctx.moveTo(0, y + rowHeight);
+            ctx.lineTo(this.width, y + rowHeight);
+            ctx.stroke();
+        });
+        // Repeat the shared, local-time axis above and below the tracks; date labels make midnight explicit.
+        for (const [index, instant] of ticks.entries()) {
+            const x = this.toX(instant),
+                local = this.time.localInput(instant),
+                clock = local.slice(11, 16),
+                date = local.slice(5, 10).replace("-", "/");
+            ctx.textAlign = index === ticks.length - 1 ? "right" : "center";
+            ctx.fillStyle = "#405c6d";
+            ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillText(clock, x, 18);
+            ctx.fillText(clock, x, this.height - 28);
+            ctx.fillStyle = "#718694";
+            ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            ctx.fillText(date, x, 32);
+            ctx.fillText(date, x, this.height - 13);
+        }
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#657c8b";
+        ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+        ctx.fillText("时间", 1, 18);
+        ctx.fillText("事件", 1, 62);
+        ctx.strokeStyle = "#e5ebef";
+        ctx.beginPath();
+        ctx.moveTo(this.left, 58);
+        ctx.lineTo(this.width - 14, 58);
+        ctx.stroke();
+        this.description.textContent = `横轴按本地时间 ${this.time.dateTime(new Date(this.range[0]).toISOString())} 至 ${this.time.dateTime(new Date(this.range[1]).toISOString())}。各指标独立纵轴：${descriptions.join("；")}。相对声音负值越接近0越响，未校准声压。点选查看观测详情；空白处为缺测，环境不同配置和启动周期不连线。`;
+        if (!this.rows.length) {
+            ctx.fillStyle = "#647684";
+            ctx.textAlign = "left";
+            ctx.fillText(this.series.length ? "所有序列已隐藏，可从图例重新选择" : "此范围无可展示观测", this.left + 12, top + 44);
+        }
+        // Boundaries label configuration/boot changes without joining or merging their data.
+        for (const segment of this.data.environment?.segments || []) {
+            const t = Date.parse(segment.utc_start);
+            if (!Number.isFinite(t) || t <= this.range[0] || t >= this.range[1]) continue;
+            const environmentAxes = this.axes.filter((axis) => metricInfo(axis.metric)?.source === "environment");
+            if (!environmentAxes.length) break;
+            ctx.strokeStyle = "#b6b4bf";
+            ctx.setLineDash([2, 5]);
+            ctx.beginPath();
+            for (const axis of environmentAxes) {
+                ctx.moveTo(this.toX(t), axis.plotTop);
+                ctx.lineTo(this.toX(t), axis.plotBottom);
+            }
             ctx.stroke();
             ctx.setLineDash([]);
-            ctx.fillStyle = "#647684";
-            ctx.textAlign = i === 0 ? "left" : i === ticks ? "right" : "center";
-            ctx.fillText(
-                this.time.clockTime(new Date(instant).toISOString()),
-                x,
-                this.height - 17,
-            );
-            if (
-                i === 0 ||
-                (i === ticks &&
-                    this.time.localInput(instant).slice(0, 10) !==
-                        this.time.localInput(this.range[0]).slice(0, 10))
-            ) {
-                ctx.font = "11px sans-serif";
-                ctx.fillText(
-                    this.time.localInput(instant).slice(5, 10).replace("-", "/"),
-                    x,
-                    this.height - 5,
-                );
-                ctx.font = "11px sans-serif";
-            }
         }
-        this.rows.forEach((metric, index) => {
-            const y = top + index * rowHeight,
-                group = this.series.filter(
-                    (s) => s.metric === metric && !this.hidden.has(s.id),
-                ),
-                points = group.flatMap((s) =>
-                    s.valid.filter(
-                        (p) => p.t >= this.range[0] && p.t <= this.range[1],
-                    ),
-                );
-            const values = points.map((p) => p.value);
-            let min = values.length ? Math.min(...values) : 0,
-                max = values.length ? Math.max(...values) : 100;
-            if (metric === "spo2") {
-                min = Math.min(90, min);
-                max = 100;
-            } else if (metric === "body_battery") {
-                min = 0;
-                max = 100;
-            } else {
-                const padding = Math.max(4, (max - min) * 0.2);
-                min = Math.max(0, min - padding);
-                max += padding;
-            }
-            ctx.textAlign = "left";
-            ctx.fillStyle = "#6c8190";
-            ctx.font = `${this.width < 500 ? 11 : 12}px sans-serif`;
-            ctx.fillText(
-                metric === "body_battery" ? "能量" : METRIC_NAMES[metric],
-                1,
-                y + 15,
-            );
-            ctx.fillStyle = "#647684";
-            ctx.font = "11px sans-serif";
-            ctx.fillText(
-                group[0]?.unit ||
-                    {
-                        heart_rate: "bpm",
-                        hrv: "ms",
-                        spo2: "%",
-                        body_battery: "/100",
-                    }[metric],
-                1,
-                y + 29,
-            );
-            ctx.strokeStyle = "#edf1f3";
-            ctx.beginPath();
-            ctx.moveTo(this.left, y + rowHeight);
-            ctx.lineTo(this.width - 14, y + rowHeight);
-            ctx.stroke();
-            if (!points.length) {
-                ctx.fillStyle = "#647684";
-                ctx.font = "11px sans-serif";
-                ctx.fillText(
-                    group.length ? "此范围无有效观测" : "序列已隐藏",
-                    this.left + 12,
-                    y + rowHeight / 2 + 3,
-                );
-            } else {
-                ctx.textAlign = "right";
-                ctx.fillStyle = "#647684";
-                ctx.font = "11px sans-serif";
-                ctx.fillText(numericText(max), this.left - 7, y + 15);
-                ctx.fillText(
-                    numericText(min),
-                    this.left - 7,
-                    y + rowHeight - 10,
-                );
-            }
-            for (const series of group)
-                for (const p of series.valid) {
-                    if (p.t < this.range[0] || p.t > this.range[1]) continue;
-                    const x = this.toX(p.t),
-                        py =
-                            y +
-                            13 +
-                            ((max - p.value) / Math.max(1, max - min)) *
-                                (rowHeight - 27);
-                    ctx.fillStyle = COLORS[metric];
-                    ctx.globalAlpha = 0.82;
-                    ctx.beginPath();
-                    ctx.arc(
-                        x,
-                        py,
-                        series.series_type === "hourly_average" ||
-                            metric === "body_battery"
-                            ? 3.5
-                            : 1.65,
-                        0,
-                        Math.PI * 2,
-                    );
-                    ctx.fill();
-                    ctx.globalAlpha = 1;
-                }
-        });
         this.eventHits = [];
         ctx.font = "11px sans-serif";
         ctx.textAlign = "left";
         for (const event of this.data.events || []) {
             const t = Date.parse(event.start_at);
+            if (event.type === "environment_sound") {
+                const end = Date.parse(event.end_at);
+                if (!Number.isFinite(t) || !Number.isFinite(end) || t >= this.range[1] || end <= this.range[0]) continue;
+                const x1 = Math.max(this.left, this.toX(t)), x2 = Math.min(this.width - 14, this.toX(end));
+                ctx.strokeStyle = metricColor("sound_relative");
+                ctx.setLineDash([2, 2]);
+                ctx.beginPath();
+                ctx.moveTo(x1, 54); ctx.lineTo(x1, 62);
+                ctx.lineTo(Math.max(x1 + 3, x2), 62); ctx.lineTo(Math.max(x1 + 3, x2), 54);
+                ctx.stroke(); ctx.setLineDash([]);
+                this.eventHits.push({ x: (x1 + x2) / 2, y: 58, event });
+                continue;
+            }
             if (!Number.isFinite(t) || t < this.range[0] || t > this.range[1])
                 continue;
             const x = this.toX(t);
             ctx.fillStyle = event.type === "nap" ? "#aa96c9" : "#6ba69b";
             ctx.beginPath();
-            ctx.arc(x, 20, 3, 0, Math.PI * 2);
+            ctx.arc(x, 58, 4, 0, Math.PI * 2);
             ctx.fill();
             if (x < this.width - 65)
                 ctx.fillText(
                     event.label || (event.type === "nap" ? "午睡" : "活动"),
                     x + 7,
-                    23,
+                    51,
                 );
-            this.eventHits.push({ x, y: 20, event });
+            this.eventHits.push({ x, y: 58, event });
         }
         if (this.drag?.mode === "select") {
             const left = Math.max(
@@ -420,16 +533,53 @@ export class TimelineChart {
         } else this.tooltip.hidden = true;
     }
     showTooltip(instant) {
+        const heading = el("div", "tooltip-heading"),
+            caption = el("span", "", `光标 ${this.time.dateTime(new Date(instant).toISOString(), true)}`);
+        heading.append(caption);
+        if (this.pinned) {
+            const close = el("button", "tooltip-close", "取消固定");
+            close.type = "button";
+            close.addEventListener("click", () => this.unpin());
+            heading.append(close);
+        }
+        this.tooltip.classList.toggle("is-pinned", this.pinned);
         this.tooltip.replaceChildren(
-            el(
-                "div",
-                "tooltip-heading",
-                `光标 ${this.time.dateTime(new Date(instant).toISOString(), true)}`,
-            ),
+            heading,
+            el("div", "tooltip-hint", this.pinned ? "详情已固定，可上下滚动；Esc 或取消固定关闭" : "点击图表固定详情，可上下滚动查看全部指标"),
         );
-        for (const series of this.series.filter(
-            (s) => !this.hidden.has(s.id),
-        )) {
+        const visible = this.series.filter((s) => !this.hidden.has(s.id));
+        const windowPoint = (series) => series.observations.find((point) =>
+            point.t <= instant && instant < point.end,
+        );
+        const envGroups = new Map();
+        for (const series of visible.filter((s) => s.source === "environment")) {
+            const key = `${series.metric}:${series.series_type}`;
+            if (!envGroups.has(key)) envGroups.set(key, []);
+            envGroups.get(key).push(series);
+        }
+        const hoverSeries = visible.filter((s) => s.source !== "environment");
+        for (const group of envGroups.values()) {
+            const matching = group.filter(windowPoint);
+            hoverSeries.push(...(matching.length ? matching : group.slice(0, 1)));
+        }
+        for (const series of hoverSeries) {
+            const row = el("div", "tooltip-row"), dot = el("span", "legend-dot"), body = el("div");
+            row.dataset.metric = series.metric;
+            row.dataset.source = series.source || "garmin";
+            row.dataset.seriesId = series.id;
+            dot.style.background = metricColor(series.metric);
+            const label = seriesLabel(series);
+            if (series.source === "environment") {
+                const point = windowPoint(series);
+                if (point) {
+                    add(body, el("strong", "", `${label}  ${number(point.value) ? numericText(point.value, metricInfo(series.metric)?.precision) : "无有效值"} ${metricInfo(series.metric)?.unit || ""}`));
+                    const peer = this.series.find((item) => item.metric === series.metric && item.source_ref === series.source_ref && item.boot_ref === series.boot_ref && item.series_type !== series.series_type);
+                    for (const line of environmentPointLines(point, series, this.time, peer && windowPoint(peer))) body.append(el("small", "", line));
+                } else body.append(el("span", "", `${label} · 此处无观测（分钟缺口）`));
+                add(row, dot, body);
+                this.tooltip.append(row);
+                continue;
+            }
             const nearby = series.valid
                 .filter((p) => p.t >= this.range[0] && p.t <= this.range[1])
                 .reduce(
@@ -443,11 +593,6 @@ export class TimelineChart {
             const tolerance = number(series.hover_tolerance_seconds)
                 ? Math.max(0, series.hover_tolerance_seconds) * 1000
                 : ((this.range[1] - this.range[0]) / this.plotWidth) * 10;
-            const row = el("div", "tooltip-row"),
-                dot = el("span", "legend-dot");
-            dot.style.background = COLORS[series.metric];
-            const body = el("div");
-            const label = seriesLabel(series);
             if (nearby && Math.abs(nearby.t - instant) <= tolerance) {
                 const delta = Math.round((nearby.t - instant) / 1000),
                     distance =
@@ -459,7 +604,7 @@ export class TimelineChart {
                     el(
                         "strong",
                         "",
-                        `${label}  ${numericText(nearby.value, 1)} ${series.unit || ""}`,
+                        `${label}  ${numericText(nearby.value, metricInfo(series.metric)?.precision)} ${metricInfo(series.metric)?.unit || ""}`,
                     ),
                     el(
                         "small",
@@ -474,6 +619,19 @@ export class TimelineChart {
         this.tooltip.hidden = false;
         const width = this.tooltip.offsetWidth;
         this.tooltip.style.left = `${Math.max(5, Math.min(this.width - width - 5, this.pointer.x > this.width * 0.55 ? this.pointer.x - width - 15 : this.pointer.x + 15))}px`;
-        this.tooltip.style.top = `${Math.max(7, Math.min(this.height - this.tooltip.offsetHeight - 40, this.pointer.y + 12))}px`;
+        const height = this.tooltip.offsetHeight,
+            shellTop = this.shell.getBoundingClientRect().top,
+            canvasOffset = this.canvas.getBoundingClientRect().top - shellTop,
+            viewportTop = 8 - shellTop,
+            viewportBottom = window.innerHeight - shellTop - height - 8,
+            lower = Math.max(7, viewportTop),
+            upper = Math.min(canvasOffset + this.height - height - 7, viewportBottom);
+        // A tall chart may begin above the viewport after page scrolling. Keep
+        // the fixed heading/close action reachable, even if the popover then
+        // needs to extend outside the visible portion of its chart container.
+        const top = lower <= upper
+            ? Math.max(lower, Math.min(upper, canvasOffset + this.pointer.y + 12))
+            : Math.max(viewportTop, Math.min(viewportBottom, canvasOffset + this.pointer.y + 12));
+        this.tooltip.style.top = `${top}px`;
     }
 }

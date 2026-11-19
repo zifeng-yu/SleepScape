@@ -120,7 +120,7 @@ def test_restore_check_only_changes_disposable_copy_and_safe_status(
     created = []
 
     def temporary(**kwargs):
-        result = original_temporary(dir=tmp_path, **kwargs)
+        result = original_temporary(**kwargs)
         created.append(Path(result.name))
         return result
 

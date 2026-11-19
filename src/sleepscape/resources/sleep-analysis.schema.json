@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SleepScape sleep analysis contract",
+  "description": "Current executable contract for evidence inputs, minimal model answers and stored reports. Validate request with #/$defs/input, model answer with #/$defs/model_output and assembled report with #/$defs/output. Eligibility is not 100% sampling completeness. Cross-field semantics and the 24 KiB input budget are enforced by the domain and resource validators.",
+  "$defs": {
+    "evidenceIds": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "pattern": "^(F|T|E)[0-9]{3}$"}},
+    "coveragePolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["min_channel_coverage", "max_affected_span_seconds"],
+      "properties": {
+        "min_channel_coverage": {"const": 0.99},
+        "max_affected_span_seconds": {"const": 300}
+      }
+    },
+    "channelCoverage": {
+      "type": "object", "additionalProperties": false,
+      "description": "Counts belong to intersecting whole minute records. usable_count excludes invalid observations; ratios are supplied by the program. coverage_ratio is strict valid-minute time coverage, not effective sample coverage. Affected spans are clipped to sleep and do not locate exact lost samples.",
+      "required": ["count_unit", "expected_windows", "valid_windows", "invalid_windows", "expected_count", "observed_count", "valid_count", "usable_count", "effective_coverage_ratio", "coverage_ratio", "max_affected_span_seconds"],
+      "properties": {
+        "count_unit": {"enum": ["sample_points", "one_second_windows"]},
+        "expected_windows": {"type": "integer", "minimum": 1, "maximum": 1441},
+        "valid_windows": {"type": "integer", "minimum": 0, "maximum": 1441},
+        "invalid_windows": {"type": "integer", "minimum": 0, "maximum": 1441},
+        "expected_count": {"type": "integer", "minimum": 1, "maximum": 86460},
+        "observed_count": {"type": "integer", "minimum": 0, "maximum": 86460},
+        "valid_count": {"type": "integer", "minimum": 0, "maximum": 86460},
+        "usable_count": {"type": "integer", "minimum": 0, "maximum": 86460},
+        "effective_coverage_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "coverage_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "max_affected_span_seconds": {"type": "number", "minimum": 0, "maximum": 86400}
+      }
+    },
+    "channels": {
+      "type": "object", "additionalProperties": false,
+      "required": ["temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative"],
+      "properties": {
+        "temperature_c": {"allOf": [{"$ref": "#/$defs/channelCoverage"}, {"properties": {"count_unit": {"const": "sample_points"}}}]},
+        "relative_humidity_pct": {"allOf": [{"$ref": "#/$defs/channelCoverage"}, {"properties": {"count_unit": {"const": "sample_points"}}}]},
+        "illuminance_lux": {"allOf": [{"$ref": "#/$defs/channelCoverage"}, {"properties": {"count_unit": {"const": "sample_points"}}}]},
+        "sound_relative": {"allOf": [{"$ref": "#/$defs/channelCoverage"}, {"properties": {"count_unit": {"const": "one_second_windows"}}}]}
+      }
+    },
+    "eligibleChannel": {
+      "allOf": [
+        {"$ref": "#/$defs/channelCoverage"},
+        {"properties": {"effective_coverage_ratio": {"minimum": 0.99}, "max_affected_span_seconds": {"maximum": 300}}}
+      ]
+    },
+    "eligibleChannels": {
+      "allOf": [
+        {"$ref": "#/$defs/channels"},
+        {"properties": {
+          "temperature_c": {"$ref": "#/$defs/eligibleChannel"},
+          "relative_humidity_pct": {"$ref": "#/$defs/eligibleChannel"},
+          "illuminance_lux": {"$ref": "#/$defs/eligibleChannel"},
+          "sound_relative": {"$ref": "#/$defs/eligibleChannel"}
+        }}
+      ]
+    },
+    "coverageWarning": {
+      "type": "object", "additionalProperties": false,
+      "description": "Projection of an approved readiness warning. Check timestamps, private source identities and fingerprint are deliberately not sent. Exact missing seconds within partial minutes are unknown.",
+      "required": ["code", "source", "metric", "window_start", "window_end", "expected", "observed", "recoverability"],
+      "properties": {
+        "code": {"enum": ["missing_environment_minutes", "invalid_channel"]},
+        "source": {"const": "environment"},
+        "metric": {"enum": ["environment.window", "temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative"]},
+        "window_start": {"type": "string", "format": "date-time"},
+        "window_end": {"type": "string", "format": "date-time"},
+        "expected": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 86460}, {"enum": ["complete_window", "full_coverage"]}]},
+        "observed": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 86460}, {"enum": ["counts_incomplete"]}]},
+        "recoverability": {"enum": ["await_upload", "unrecoverable", "unknown"]}
+      }
+    },
+    "fact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "metric", "value", "unit", "source", "period", "quality", "valid_n", "expected_n"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^F[0-9]{3}$"},
+        "metric": {"type": "string", "pattern": "^[a-z][a-z0-9_.]{1,79}$"},
+        "value": {"type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000},
+        "unit": {"enum": ["min", "bpm", "ms", "points", "load_units", "degC", "percent", "lx", "dBFS", "count"]},
+        "source": {"enum": ["garmin", "environment", "derived"]},
+        "period": {"enum": ["night", "previous_day", "baseline30", "comparison"]},
+        "quality": {"enum": ["valid", "unavailable"]},
+        "valid_n": {"type": ["integer", "null"], "minimum": 0, "maximum": 86460},
+        "expected_n": {"type": ["integer", "null"], "minimum": 1, "maximum": 86460}
+      }
+    },
+    "timelineBin": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "start_at", "end_at", "profile_segment", "temperature_c", "humidity_pct", "illuminance_lux", "sound_dbfs", "coverage"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^T[0-9]{3}$"},
+        "start_at": {"type": "string", "format": "date-time"},
+        "end_at": {"type": "string", "format": "date-time"},
+        "profile_segment": {"type": "string", "pattern": "^segment-[0-9]{1,3}$"},
+        "temperature_c": {"type": ["number", "null"], "minimum": -80, "maximum": 125},
+        "humidity_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+        "illuminance_lux": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+        "sound_dbfs": {"type": ["number", "null"], "minimum": -200, "maximum": 0},
+        "coverage": {"$ref": "#/$defs/channels", "description": "Per-bin counts and coverage, not a second 99% eligibility gate. Unavailable bin values stay null."}
+      }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "start_at", "end_at", "profile_segment", "active_seconds", "max_1s_rms_dbfs", "merged", "incomplete"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^E[0-9]{3}$"},
+        "start_at": {"type": "string", "format": "date-time"},
+        "end_at": {"type": "string", "format": "date-time"},
+        "profile_segment": {"type": "string", "pattern": "^segment-[0-9]{1,3}$"},
+        "active_seconds": {"type": "number", "minimum": 0, "maximum": 86400},
+        "max_1s_rms_dbfs": {"type": "number", "minimum": -200, "maximum": 0},
+        "merged": {"type": "boolean"},
+        "incomplete": {"type": "boolean"}
+      }
+    },
+    "input": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "synthetic", "night_date", "timezone", "input_hash", "data_cutoff_at", "is_provisional", "readiness", "sleep_window", "completeness", "facts", "timeline", "events", "event_status", "required_limitations"],
+      "properties": {
+        "schema_version": {"const": "sleep-input-1"},
+        "synthetic": {"type": "boolean"},
+        "night_date": {"type": "string", "format": "date"},
+        "timezone": {"const": "Asia/Shanghai"},
+        "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "data_cutoff_at": {"type": "string", "format": "date-time"},
+        "is_provisional": {"type": "boolean", "description": "Compatibility display field; false does not establish source finality or analysis readiness."},
+        "readiness": {"const": "ready"},
+        "sleep_window": {
+          "type": "object", "additionalProperties": false, "required": ["start_at", "end_at"],
+          "properties": {"start_at": {"type": "string", "format": "date-time"}, "end_at": {"type": "string", "format": "date-time"}}
+        },
+        "completeness": {
+          "type": "object", "additionalProperties": false,
+          "required": ["policy_version", "policy", "quality_state", "garmin_core_complete", "environment_eligible", "environment_expected_windows", "environment_observed_windows", "time_quality", "channels", "warnings", "warning_interval_scope"],
+          "properties": {
+            "policy_version": {"const": "dual-source-coverage-1"},
+            "policy": {"$ref": "#/$defs/coveragePolicy"},
+            "quality_state": {"enum": ["complete", "with_gaps"]},
+            "garmin_core_complete": {"const": true},
+            "environment_eligible": {"const": true, "description": "Meets policy, not a claim of 100% valid samples or measurement accuracy."},
+            "environment_expected_windows": {"type": "integer", "minimum": 1, "maximum": 1441},
+            "environment_observed_windows": {"type": "integer", "minimum": 1, "maximum": 1441},
+            "time_quality": {"enum": ["anchored", "estimated"]},
+            "channels": {"$ref": "#/$defs/eligibleChannels"},
+            "warnings": {"type": "array", "maxItems": 2880, "items": {"$ref": "#/$defs/coverageWarning"}},
+            "warning_interval_scope": {"const": "affected_minute_ranges_clipped_to_sleep"}
+          },
+          "allOf": [
+            {"if": {"properties": {"quality_state": {"const": "complete"}}}, "then": {"properties": {"warnings": {"maxItems": 0}}}},
+            {"if": {"properties": {"quality_state": {"const": "with_gaps"}}}, "then": {"properties": {"warnings": {"minItems": 1}}}}
+          ]
+        },
+        "facts": {"type": "array", "minItems": 9, "maxItems": 128, "items": {"$ref": "#/$defs/fact"}},
+        "timeline": {"type": "array", "maxItems": 96, "items": {"$ref": "#/$defs/timelineBin"}},
+        "events": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/event"}},
+        "event_status": {"enum": ["available", "none_detected", "unavailable", "context_truncated"]},
+        "required_limitations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,79}$"}}
+      },
+      "allOf": [{
+        "if": {"properties": {"completeness": {"properties": {"quality_state": {"const": "with_gaps"}}}}},
+        "then": {"properties": {"required_limitations": {"contains": {"const": "sampling_gaps_present"}}}}
+      }]
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "text", "evidence_ids", "evidence_level"],
+      "properties": {
+        "category": {"enum": ["sleep", "body_signals", "previous_day", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"},
+        "evidence_level": {"enum": ["limited", "moderate"]}
+      }
+    },
+    "hypothesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factor", "text", "evidence_ids", "evidence_level", "alternatives"],
+      "properties": {
+        "factor": {"enum": ["temperature", "humidity", "light", "sound", "training_load", "stress", "sleep_schedule"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"},
+        "evidence_level": {"const": "limited"},
+        "alternatives": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "minLength": 1, "maxLength": 180}}
+      }
+    },
+    "action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "observe", "evidence_ids"],
+      "properties": {
+        "kind": {"enum": ["record", "observe", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 220},
+        "observe": {"type": "string", "minLength": 1, "maxLength": 180},
+        "evidence_ids": {"$ref": "#/$defs/evidenceIds"}
+      }
+    },
+    "modelEvidenceIds": {"type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": true, "items": {"type": "string", "pattern": "^(F|T|E)[0-9]{3}$"}},
+    "modelClaim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "text", "evidence_ids"],
+      "properties": {
+        "category": {"enum": ["sleep", "body_signals", "previous_day", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/modelEvidenceIds"}
+      }
+    },
+    "modelHypothesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["factor", "text", "evidence_ids", "alternatives"],
+      "properties": {
+        "factor": {"enum": ["temperature", "humidity", "light", "sound", "training_load", "stress", "sleep_schedule"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 300},
+        "evidence_ids": {"$ref": "#/$defs/modelEvidenceIds"},
+        "alternatives": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "minLength": 1, "maxLength": 180}}
+      }
+    },
+    "modelAction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "observe", "evidence_ids"],
+      "properties": {
+        "kind": {"enum": ["record", "observe", "environment"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 220},
+        "observe": {"type": "string", "minLength": 1, "maxLength": 180},
+        "evidence_ids": {"$ref": "#/$defs/modelEvidenceIds"}
+      }
+    },
+    "model_output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["summary", "observations", "hypotheses", "actions"],
+      "properties": {
+        "summary": {
+          "type": "object", "additionalProperties": false, "required": ["text", "evidence_ids"],
+          "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 300}, "evidence_ids": {"$ref": "#/$defs/modelEvidenceIds"}}
+        },
+        "observations": {"type": "array", "minItems": 4, "maxItems": 6, "items": {"$ref": "#/$defs/modelClaim"}},
+        "hypotheses": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/modelHypothesis"}},
+        "actions": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/modelAction"}}
+      }
+    },
+    "output": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "night_date", "input_hash", "input_quality_state", "status", "summary", "observations", "hypotheses", "actions", "limitations"],
+      "properties": {
+        "schema_version": {"const": "sleep-output-1"},
+        "night_date": {"type": "string", "format": "date"},
+        "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "input_quality_state": {"enum": ["complete", "with_gaps"], "description": "Echo completeness.quality_state from the input. Report status complete never means all source samples were complete."},
+        "status": {"enum": ["complete", "insufficient_input"]},
+        "summary": {
+          "type": "object", "additionalProperties": false, "required": ["text", "evidence_ids"],
+          "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 300}, "evidence_ids": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "pattern": "^(F|T|E)[0-9]{3}$"}}}
+        },
+        "observations": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/claim"}},
+        "hypotheses": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/hypothesis"}},
+        "actions": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/action"}},
+        "limitations": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,79}$"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"input_quality_state": {"const": "with_gaps"}}}, "then": {"properties": {"limitations": {"contains": {"const": "sampling_gaps_present"}}}}},
+        {"if": {"properties": {"status": {"const": "insufficient_input"}}}, "then": {"properties": {"observations": {"maxItems": 0}, "hypotheses": {"maxItems": 0}, "actions": {"maxItems": 0}}}}
+      ]
+    }
+  }
+}

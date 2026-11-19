@@ -1,0 +1,28 @@
+# Template only. Configure a destination privately before enabling export.
+[Unit]
+Description=SleepScape verified backup and bounded maintenance
+Wants=network-online.target
+After=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+User=sleepscape
+Group=sleepscape
+WorkingDirectory=/opt/sleepscape
+EnvironmentFile=/opt/sleepscape/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/sleepscape/.venv/bin/sleepscape maintenance-run
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sleepscape/data
+# For path export, add ONLY the explicit mounted destination in a service override.
+# SSH key/known_hosts files are read-only; no agent forwarding or password prompts.
+MemoryMax=768M
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# No automatic immediate retries; inspect failure, then use the explicit CLI --retry.

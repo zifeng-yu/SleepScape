@@ -71,12 +71,15 @@ def _attempt(row) -> dict:
 class DashboardReader:
     """One coherent read transaction per service call, including a missing database."""
 
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, connection: sqlite3.Connection | None = None):
+        self._owns_connection = connection is None
         self.path = Path(data_dir) / "sleepscape.sqlite3"
-        self.connection: sqlite3.Connection | None = None
+        self.connection: sqlite3.Connection | None = connection
 
     def __enter__(self):
-        if self.path.is_file():
+        if self.path.is_symlink() or self.path.parent.is_symlink():
+            raise StorageReadError("storage_unavailable")
+        if self._owns_connection and self.path.is_file():
             self.connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
             self.connection.row_factory = sqlite3.Row
             try:
@@ -92,7 +95,8 @@ class DashboardReader:
 
     def close(self):
         if self.connection is not None:
-            self.connection.close()
+            if self._owns_connection:
+                self.connection.close()
             self.connection = None
 
     def _query(self, sql: str, values=()):
@@ -172,7 +176,7 @@ class DashboardReader:
             )
         ]
 
-    def status(self) -> dict:
+    def status(self, start_date: date | None = None) -> dict:
         counts = {"record_count": 0, "raw_snapshot_count": 0, "request_count": 0}
         for key, table in (
             ("record_count", "normalized_records"),
@@ -184,6 +188,8 @@ class DashboardReader:
         nights = self._query(
             "SELECT MIN(date),MAX(date) FROM normalized_records WHERE kind='sleep' "
             "AND resource IN ('sleep','sleep_summaries')"
+            + (" AND date >= ?" if start_date is not None else ""),
+            (start_date.isoformat(),) if start_date is not None else (),
         )
         runs = self._query(
             "SELECT status,started_at,finished_at,plan_json,summary_json FROM runs "

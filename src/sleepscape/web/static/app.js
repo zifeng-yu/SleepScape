@@ -7,7 +7,6 @@ import {
     reason,
     stateName,
     seriesLabel,
-    COLORS,
     STAGE_COLORS,
     validDate,
     shiftDate,
@@ -16,12 +15,29 @@ import {
     createTimeFormatter,
 } from "./format.js";
 import { TimelineChart } from "./timeline.js";
+import { configureMetrics, validSeriesID, defaultVisible, metricColor, registeredSeries } from "./metrics.js";
+import { environmentPanel, environmentStatusPanel } from "./environment.js";
+import { eventsPanel as renderEventsPanel, revealEvent } from "./events.js";
+import { dailyStatusPanel } from "./daily.js";
+import { reportSummary } from "./report.js";
+import { maintenanceStatusPanel } from "./maintenance.js";
+import {
+    analysisPanel,
+    renderAnalysis,
+    renderAnalysisUnavailable,
+    modelStatusPanel,
+    analysisSummary,
+} from "./analysis.js";
 
 const content = $("#page-content");
 const state = {
     view: "night",
     date: null,
     hidden: new Set(),
+    visible: new Set(),
+    metricsLoaded: false,
+    metricsError: false,
+    pendingWindow: null,
     timezone: "Asia/Shanghai",
     status: null,
     night: null,
@@ -39,19 +55,27 @@ const state = {
 
 let time = createTimeFormatter(state.timezone);
 
+function dashboardStartDate() {
+    const date = state.status?.dashboard_start_date;
+    return validDate(date) ? date : null;
+}
+function visibleDate(date) {
+    const start = dashboardStartDate();
+    return start && validDate(date) && date < start ? start : date;
+}
+
 function readURL() {
     const params = new URLSearchParams(location.search);
     state.view = ["night", "history", "status"].includes(params.get("view"))
         ? params.get("view")
         : "night";
     state.date = validDate(params.get("date")) ? params.get("date") : null;
-    state.hidden = new Set(
-        (params.get("hidden") || "")
-            .split(",")
-            .filter((v) =>
-                /^(heart_rate|hrv|spo2|body_battery):[a-z_]+$/.test(v),
-            ),
-    );
+    // Preserve every allowed ID plus separators when restoring all 80 series.
+    const seriesIDs = (name) => new Set((params.get(name) || "").slice(0, 80 * 221)
+        .split(",").slice(0, 80).filter((value) => state.metricsLoaded
+            ? validSeriesID(value) : /^[a-z0-9_:-]{1,220}$/.test(value)));
+    state.hidden = seriesIDs("hidden");
+    state.visible = seriesIDs("visible");
     state.historyDays = params.get("days") === "30" ? 30 : 7;
 }
 function writeURL(replace = false) {
@@ -60,8 +84,10 @@ function writeURL(replace = false) {
     if (state.date) params.set("date", state.date);
     if (state.hidden.size)
         params.set("hidden", [...state.hidden].sort().join(","));
+    if (state.visible.size)
+        params.set("visible", [...state.visible].sort().join(","));
     if (state.view === "history") params.set("days", String(state.historyDays));
-    const url = `/?${params}`;
+    const url = `${location.pathname}?${params}`;
     if (location.pathname + location.search !== url)
         history[replace ? "replaceState" : "pushState"]({}, "", url);
     updateNav();
@@ -73,7 +99,7 @@ function updateNav() {
         else a.removeAttribute("aria-current");
         const params = new URLSearchParams({ view: a.dataset.view });
         if (state.date) params.set("date", state.date);
-        a.href = `/?${params}`;
+        a.href = `${location.pathname}?${params}`;
     });
 }
 function notice(message = "", error = false) {
@@ -143,6 +169,19 @@ async function loadView(refreshStatus = false) {
     try {
         if (!state.status || refreshStatus)
             state.status = await api("status", state.abort.signal);
+        if (!state.metricsLoaded || refreshStatus) {
+            try {
+                configureMetrics(await api("metrics", state.abort.signal));
+                state.metricsLoaded = true;
+                state.metricsError = false;
+                state.hidden = new Set([...state.hidden].filter(validSeriesID));
+                state.visible = new Set([...state.visible].filter(validSeriesID));
+            } catch (error) {
+                if (error.name === "AbortError") throw error;
+                state.metricsError = true;
+                // Existing cards and status remain usable if registry retrieval fails.
+            }
+        }
         if (generation !== state.generation) return;
         try {
             new Intl.DateTimeFormat("zh-CN", {
@@ -157,6 +196,7 @@ async function loadView(refreshStatus = false) {
             state.date = validDate(state.status.latest_night)
                 ? state.status.latest_night
                 : time.localInput(Date.now()).slice(0, 10);
+        state.date = visibleDate(state.date);
         writeURL(true);
         $("#sync-label").textContent = state.status.latest_success_at
             ? `采集于 ${time.dateTime(state.status.latest_success_at)}`
@@ -184,8 +224,9 @@ async function loadView(refreshStatus = false) {
             await loadHistory(generation);
             return;
         }
-        state.mode = "night";
-        state.window = null;
+        state.mode = state.pendingWindow ? "custom" : "night";
+        state.window = state.pendingWindow;
+        state.pendingWindow = null;
         let night;
         try {
             night = await api(`nights/${state.date}`, state.abort.signal);
@@ -197,7 +238,13 @@ async function loadView(refreshStatus = false) {
         state.night = night;
         state.timeline = null;
         renderNight(night);
-        if (night) await loadTimeline();
+        loadAnalysis(
+            generation,
+            state.date,
+            state.abort.signal,
+            $("#sleep-analysis-panel"),
+        );
+        await loadTimeline();
     } catch (error) {
         if (error.name === "AbortError" || generation !== state.generation)
             return;
@@ -205,18 +252,36 @@ async function loadView(refreshStatus = false) {
         notice(errorText(error), true);
     }
 }
+async function loadAnalysis(generation, date, signal, panel) {
+    if (!panel) return;
+    try {
+        const data = await api(`nights/${date}/analysis`, signal);
+        if (generation !== state.generation || !panel.isConnected) return;
+        renderAnalysis(panel, data, date, time);
+    } catch (error) {
+        if (
+            error.name === "AbortError" ||
+            generation !== state.generation ||
+            !panel.isConnected
+        )
+            return;
+        renderAnalysisUnavailable(panel, [401, 403].includes(error.status));
+    }
+}
 function navigate(view, date = state.date) {
     state.view = view;
-    state.date = date;
+    state.date = visibleDate(date);
     writeURL();
     loadView();
 }
-function dateToolbar(provisional = false) {
+function dateToolbar() {
     const root = el("div", "toolbar"),
         picker = el("div", "date-picker"),
         input = el("input");
     input.type = "date";
     input.value = state.date;
+    const start = dashboardStartDate();
+    if (start) input.min = start;
     input.setAttribute("aria-label", "选择醒来日期");
     input.addEventListener("change", () => {
         if (validDate(input.value)) navigate("night", input.value);
@@ -234,6 +299,7 @@ function dateToolbar(provisional = false) {
         b.append(icon(name));
         b.setAttribute("aria-label", label);
         b.title = label;
+        b.disabled = !!start && shiftDate(state.date, amount) < start;
         nav.append(b);
     }
     const weekday = new Intl.DateTimeFormat("zh-CN", {
@@ -247,7 +313,7 @@ function dateToolbar(provisional = false) {
         el(
             "span",
             "date-caption",
-            `醒来日期 · ${state.timezone}${provisional ? " · 今日记录待确认" : ""}`,
+            `醒来日期 · ${state.timezone}${start ? ` · 从${start}起展示` : ""}`,
         ),
     );
     return root;
@@ -374,22 +440,34 @@ function metricCard(title, key, symbol, night) {
                 : "睡眠窗口内的设备平均值";
     if (["stale", "pending", "invalid"].includes(metric.state))
         sub.append(chip(metric.state));
-    add(root, value, sub, sourceDetails(metric, extra));
+    const details = sourceDetails(metric, extra);
+    details.querySelector("summary").setAttribute("aria-label", `${title}的来源与口径`);
+    add(root, value, sub, details);
     return root;
 }
 function renderNight(night) {
-    content.replaceChildren(dateToolbar(night?.is_provisional));
+    content.replaceChildren(dateToolbar());
     if (!night) {
+        const waiting = dashboardStartDate() && !validDate(state.status?.latest_night);
         content.append(
             add(
                 el("section", "card"),
                 empty(
-                    "这一天还没有睡眠记录",
-                    "可选择其他日期。没有记录的日期不会被自动跳过，也不会按零值显示。",
+                    waiting ? "等待采集首晚睡眠数据" : "这一天还没有睡眠记录",
+                    waiting
+                        ? `看板从${dashboardStartDate()}起展示。睡眠记录到达后显示，环境数据可先在下方时间轴查看。`
+                        : "可选择其他日期。没有记录的日期不会被自动跳过，也不会按零值显示。",
                 ),
             ),
+            analysisPanel(),
+            timelinePanel(),
+            eventsPanel([]),
         );
         return;
+    }
+    if (dashboardStartDate() && !validDate(state.status?.latest_night) && night.environment_only) {
+        content.append(el("p", "environment-note first-night-waiting",
+            "环境数据已开始记录，等待采集首晚睡眠数据。"));
     }
     const cards = el("section", "cards");
     cards.setAttribute("aria-label", "夜间核心指标");
@@ -432,8 +510,9 @@ function renderNight(night) {
     add(
         content,
         cards,
-        secondary,
+        analysisPanel(),
         sleepPanel(night),
+        secondary,
         timelinePanel(),
         eventsPanel(night.activities || []),
     );
@@ -524,9 +603,9 @@ function timelinePanel() {
     root.id = "timeline-panel";
     root.append(
         heading(
-            "同一晚，同一条时间轴",
-            "按真实观测时刻对齐，不补值、不跨缺口连线。",
-            "UTC 对齐 · 本地时间显示",
+            "身体与环境时间轴",
+            "勾选指标查看变化；点选曲线查看读数和来源，空白处表示没有有效观测。",
+            state.timezone === "Asia/Shanghai" ? "北京时间 · UTC+8" : state.timezone,
         ),
     );
     const controls = el("div", "timeline-controls"),
@@ -555,7 +634,7 @@ function timelinePanel() {
     root.append(controls);
     const form = el("form", "custom-range");
     form.id = "custom-range";
-    form.hidden = true;
+    form.hidden = state.mode !== "custom";
     for (const [name, label] of [
         ["from", "从"],
         ["to", "到"],
@@ -563,6 +642,7 @@ function timelinePanel() {
         const input = el("input");
         input.type = "datetime-local";
         input.name = name;
+        if (state.window) input.value = time.localInput(state.window[name === "from" ? 0 : 1]);
         input.required = true;
         input.setAttribute(
             "aria-label",
@@ -591,6 +671,8 @@ function timelinePanel() {
         state.window = [start, end];
         loadTimeline();
     });
+    const environment = el("div");
+    environment.id = "environment-panel";
     const legend = el("div", "legend");
     legend.id = "timeline-legend";
     const shell = el("div", "chart-shell");
@@ -599,10 +681,10 @@ function timelinePanel() {
     const bottom = el("div", "chart-bottom");
     add(
         bottom,
-        el("span", "", "拖动框选 · 平移模式拖动 · Ctrl/⌘ + 滚轮缩放"),
+        el("span", "", "拖动框选 · 平移模式拖动 · 点选固定详情后可滚动 · Ctrl/⌘ + 滚轮缩放"),
         el("span", "", "键盘 +/− 缩放 · ←/→ 平移 · Home 恢复"),
     );
-    add(root, form, legend, shell, bottom);
+    add(root, form, legend, shell, bottom, environment);
     return root;
 }
 function setInteraction(mode) {
@@ -681,30 +763,54 @@ async function loadTimeline() {
         const focused = document.activeElement === state.chart?.canvas;
         const interaction = state.chart?.interaction || "select";
         state.timeline = timeline;
+        timeline.series = registeredSeries(timeline.series);
         state.chart?.destroy();
         shell.replaceChildren();
         shell.setAttribute("aria-busy", "false");
         const legend = $("#timeline-legend");
         legend.replaceChildren();
-        for (const series of timeline.series || []) {
-            const label = el("label"),
-                input = el("input"),
-                dot = el("span", "legend-dot");
+        const effectiveHidden = new Set(timeline.series.filter((series) =>
+            state.hidden.has(series.id) || (!state.visible.has(series.id) && !defaultVisible(series)),
+        ).map((series) => series.id));
+        const groups = new Map();
+        for (const series of timeline.series) {
+            const key = `${series.metric}:${series.series_type}`;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(series);
+        }
+        for (const members of groups.values()) {
+            const series = members[0], label = el("label"),
+                input = el("input"), dot = el("span", "legend-dot");
+            const shown = members.filter((item) => !effectiveHidden.has(item.id)).length;
             input.type = "checkbox";
-            input.checked = !state.hidden.has(series.id);
-            dot.style.background = COLORS[series.metric] || "#8b9ca5";
+            input.dataset.seriesId = series.id;
+            input.dataset.seriesCount = String(members.length);
+            input.checked = shown === members.length;
+            input.indeterminate = shown > 0 && shown < members.length;
+            dot.style.background = metricColor(series.metric);
+            label.dataset.metric = series.metric;
+            label.dataset.source = series.source || "garmin";
+            label.dataset.seriesType = series.series_type;
+            label.title = members.length > 1
+                ? `同时控制这个指标的${members.length}个采集分段；分段之间不连线。`
+                : seriesLabel(series, false);
             input.addEventListener("change", () => {
-                if (input.checked) state.hidden.delete(series.id);
-                else state.hidden.add(series.id);
+                input.indeterminate = false;
+                for (const member of members) {
+                    if (input.checked) {
+                        state.hidden.delete(member.id);
+                        effectiveHidden.delete(member.id);
+                        if (!defaultVisible(member)) state.visible.add(member.id);
+                    } else {
+                        state.hidden.add(member.id);
+                        state.visible.delete(member.id);
+                        effectiveHidden.add(member.id);
+                    }
+                }
                 writeURL();
                 state.chart?.draw();
             });
-            add(
-                label,
-                input,
-                dot,
-                document.createTextNode(seriesLabel(series)),
-            );
+            add(label, input, dot, document.createTextNode(seriesLabel(series, false)));
             legend.append(label);
         }
         state.chart = new TimelineChart(
@@ -712,7 +818,7 @@ async function loadTimeline() {
             timeline,
             state.night?.sleep || {},
             {
-                hidden: state.hidden,
+                hidden: effectiveHidden,
                 time,
                 onRangeChange: (range) => {
                     state.mode = "custom";
@@ -728,22 +834,20 @@ async function loadTimeline() {
                     loadTimeline();
                 },
                 onReset: () => chooseWindow("night"),
-                onEventSelect: (event) => {
-                    for (const detail of document.querySelectorAll(
-                        "[data-event-key]",
-                    )) {
-                        if (detail.dataset.eventKey !== event.key) continue;
-                        detail.open = true;
-                        detail.scrollIntoView({
-                            behavior: "smooth",
-                            block: "nearest",
-                        });
-                    }
-                },
+                onEventSelect: (event) => revealEvent($("#events-panel"), event.key),
             },
         );
+        const environment = environmentPanel(timeline.environment, time);
+        $("#environment-panel")?.replaceWith(environment);
+        if (timeline.sleep_window_unavailable || !state.night?.sleep?.start_at)
+            environment.prepend(el("p", "environment-note", "没有已记录的Garmin睡眠窗口；当前为观测查询区间，不代表用户已入睡。可用自定义范围查看白天采集。"));
+        if (!state.metricsLoaded || state.metricsError) {
+            state.chart.destroy();
+            state.chart = null;
+            shell.replaceChildren(empty("指标配置暂不可用", "观测记录仍保留，请刷新后重试时间轴。"));
+        }
         setInteraction(interaction);
-        if (focused) state.chart.canvas.focus({ preventScroll: true });
+        if (focused) state.chart?.canvas.focus({ preventScroll: true });
         $("#series-resolution")?.remove();
         const resolution = add(
             el("details", "source-details"),
@@ -754,12 +858,15 @@ async function loadTimeline() {
         for (const series of timeline.series || []) {
             const display = series.display_resolution || {};
             const sampling =
-                series.series_type === "hourly_average"
+                series.source === "environment"
+                    ? "真实分钟窗口"
+                    : series.series_type === "hourly_average"
                     ? "小时聚合"
                     : "原生观测点";
             const reduction =
                 display.method === "minmax" ||
-                display.method === "minmax_bucket"
+                display.method === "minmax_bucket" ||
+                display.method === "window_minmax"
                     ? ` · 按${numericText((display.bucket_seconds || 0) / 60, 1)}分钟显示桶保留极值`
                     : "";
             add(
@@ -791,80 +898,17 @@ async function loadTimeline() {
             return;
         state.chart?.destroy();
         state.chart = null;
-        shell.replaceChildren(empty("时间序列暂不可用", errorText(error)));
+        shell.replaceChildren(error.status === 404
+            ? empty("当前范围尚无观测", "仍可选择自定义时间查看环境记录；没有睡眠记录不代表环境设备没有采集。")
+            : empty("时间序列暂不可用", errorText(error)));
         shell.setAttribute("aria-busy", "false");
     }
 }
 function eventsPanel(events) {
-    const root = el("section", "card events-card");
-    root.id = "events-panel";
-    root.append(
-        heading(
-            "运动与午睡",
-            "关联记录单独保留，点击查看活动摘要。",
-            `${events.length} 条记录`,
-        ),
-    );
-    const list = el("div", "events-list");
-    if (!events.length)
-        list.append(
-            empty("当前范围没有事件记录", "未记录不等于没有活动或午睡。"),
-        );
-    for (const event of events
-        .slice()
-        .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at))) {
-        const detail = el("details", "event");
-        detail.dataset.eventKey = event.key;
-        const summary = el("summary"),
-            badge = add(
-                el("span", `event-icon ${event.type === "nap" ? "nap" : ""}`),
-                icon(event.type === "nap" ? "moon" : "load"),
-            );
-        const label = add(
-            el("span", "event-main"),
-            el(
-                "span",
-                "",
-                event.label || (event.type === "nap" ? "午睡" : "运动"),
-            ),
-            el(
-                "small",
-                "",
-                `${time.dateTime(event.start_at)} — ${time.clockTime(event.end_at)}`,
-            ),
-        );
-        const metrics = event.metrics || {};
-        add(
-            summary,
-            badge,
-            label,
-            el("span", "event-meta", duration(metrics.duration_seconds)),
-        );
-        const body = el("div", "event-detail");
-        if (event.type === "activity")
-            add(
-                body,
-                el(
-                    "span",
-                    "",
-                    `训练负荷 ${numericText(metrics.training_load, 1)}`,
-                ),
-                el(
-                    "span",
-                    "",
-                    `平均心率 ${numericText(metrics.average_heart_rate)} 次/分`,
-                ),
-            );
-        body.append(el("span", "", `源日期 ${text(event.source_date)}`));
-        if (event.quality?.length)
-            body.append(el("span", "", event.quality.map(reason).join("；")));
-        if (event.start_at && Number.isFinite(Date.parse(event.start_at)))
-            body.append(button("定位到时间轴", () => focusEvent(event)));
-        add(detail, summary, body);
-        list.append(detail);
-    }
-    root.append(list);
-    return root;
+    return renderEventsPanel(events, {
+        time, timeline: state.timeline, previousDate: shiftDate(state.date, -1),
+        onLocate: focusEvent,
+    });
 }
 function focusEvent(event) {
     const start = Date.parse(event.start_at),
@@ -884,11 +928,12 @@ function focusEvent(event) {
 }
 
 async function loadHistory(generation) {
-    const start = shiftDate(state.date, -(state.historyDays - 1));
+    const start = visibleDate(shiftDate(state.date, -(state.historyDays - 1)));
     const params = new URLSearchParams({ start, end: state.date, limit: "31" });
     const result = await api(`nights?${params}`, state.abort.signal);
     if (generation !== state.generation) return;
-    renderHistory(result.items || [], start);
+    renderHistory((result.items || []).filter((item) =>
+        !dashboardStartDate() || item.date >= dashboardStartDate()), start);
 }
 function renderHistory(items, start) {
     const controls = el("div", "history-controls"),
@@ -951,6 +996,12 @@ function renderHistory(items, start) {
         } else th.textContent = label;
         tr.append(th);
     }
+    const analysisHeader = el("th", "", "完整性检查");
+    analysisHeader.scope = "col";
+    tr.append(analysisHeader);
+    const reportHeader = el("th", "", "睡眠报告");
+    reportHeader.scope = "col";
+    tr.append(reportHeader);
     thead.append(tr);
     const tbody = el("tbody");
     const sorted = [...items].sort((a, b) => {
@@ -964,7 +1015,7 @@ function renderHistory(items, start) {
         const row = el("tr"),
             dateCell = el("td"),
             link = el("a", "history-date", item.date);
-        link.href = `/?view=night&date=${encodeURIComponent(item.date)}`;
+        link.href = `${location.pathname}?view=night&date=${encodeURIComponent(item.date)}`;
         link.addEventListener("click", (event) => {
             if (event.metaKey || event.ctrlKey) return;
             event.preventDefault();
@@ -1008,6 +1059,12 @@ function renderHistory(items, start) {
                     partiallyMissing ? "部分缺失" : undefined,
                 ),
             ),
+            el(
+                "td",
+                "analysis-history-state",
+                analysisSummary(item.analysis_summary, time),
+            ),
+            el("td", "report-history-state", reportSummary(item.report_summary, time)),
         );
         tbody.append(row);
     }
@@ -1126,11 +1183,14 @@ function renderStatus(data) {
         statusItem("原始观测快照", numericText(database.raw_snapshot_count)),
         statusItem("请求审计", numericText(database.request_count)),
         statusItem(
-            "当前数据日期",
+            "可展示睡眠日期",
             data.earliest_night && data.latest_night
                 ? `${data.earliest_night} — ${data.latest_night}`
                 : "暂无",
         ),
+        dashboardStartDate()
+            ? statusItem("看板展示起点", dashboardStartDate())
+            : null,
         statusItem(
             "备份",
             stateName(data.backup?.state || "not_configured"),
@@ -1152,7 +1212,20 @@ function renderStatus(data) {
         );
     storage.append(storageList);
     add(columns, capabilities, storage);
-    content.replaceChildren(cards, resources, columns);
+    content.replaceChildren(
+        cards,
+        dailyStatusPanel(data.daily),
+        maintenanceStatusPanel(data.maintenance),
+        environmentStatusPanel(data.environment, time, (captureEnd) => {
+            const end = Date.parse(captureEnd);
+            if (!Number.isFinite(end)) return;
+            state.pendingWindow = [end - 10 * 60000, end + 60000];
+            navigate("night", time.localInput(end).slice(0, 10));
+        }),
+        modelStatusPanel(data.model, time),
+        resources,
+        columns,
+    );
 }
 document.querySelectorAll("[data-view]").forEach((a) =>
     a.addEventListener("click", (event) => {

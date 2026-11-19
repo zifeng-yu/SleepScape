@@ -14,8 +14,18 @@ from uuid import uuid4
 
 from sleepscape.config import Settings
 from sleepscape.domain.environment_integrity import validate_environment_row
+from sleepscape.storage.analysis import ANALYSIS_TABLES, analysis_available, validate_analysis
 from sleepscape.storage.environment import ENVIRONMENT_TABLES, PAYLOAD_TABLES
+from sleepscape.storage.environment_index import INDEX_TABLES, index_available, validate_index
 from sleepscape.storage.reports import write_private_json
+from sleepscape.storage.sleep_analysis import (
+    REPORT_TABLES,
+    REVISION_TABLE,
+    report_available,
+    revisions_available,
+    validate_reports,
+)
+from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 TABLES = ("runs", "raw_snapshots", "normalized_records", "requests")
 MAX_RAW_BYTES = 64 * 1024 * 1024
@@ -35,6 +45,19 @@ def _readonly(path: Path) -> sqlite3.Connection:
     source = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
     source.execute("PRAGMA query_only = ON")
     return source
+
+
+def source_size(path: Path) -> int:
+    """Include committed WAL growth in conservative copy space admission."""
+    total = 0
+    for candidate in (path, Path(str(path) + "-wal")):
+        if candidate.is_symlink():
+            raise BackupError("backup_source_unavailable")
+        if candidate.exists():
+            if not candidate.is_file():
+                raise BackupError("backup_source_unavailable")
+            total += candidate.stat().st_size
+    return total
 
 
 def _copy(source: sqlite3.Connection, destination: Path) -> None:
@@ -66,7 +89,33 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
         (1,)
     ]:
         raise BackupError("backup_environment_schema_unsupported")
-    selected = TABLES + (ENVIRONMENT_TABLES if present else ())
+    index_present = set(INDEX_TABLES) & tables
+    if index_present:
+        if not present:
+            raise BackupError("backup_environment_index_without_facts")
+        try:
+            index_available(connection)
+        except Exception:
+            raise BackupError("backup_environment_index_schema_invalid") from None
+    try:
+        analysis_present = analysis_available(connection)
+    except Exception:
+        raise BackupError("backup_analysis_schema_invalid") from None
+    try:
+        reports_present = report_available(connection)
+        revisions = revisions_available(connection)
+        if revisions and not reports_present:
+            raise BackupError("backup_sleep_analysis_schema_invalid")
+    except Exception:
+        raise BackupError("backup_sleep_analysis_schema_invalid") from None
+    selected = (
+        TABLES
+        + (ENVIRONMENT_TABLES if present else ())
+        + (INDEX_TABLES if index_present else ())
+        + (ANALYSIS_TABLES if analysis_present else ())
+        + (REPORT_TABLES if reports_present else ())
+        + ((REVISION_TABLE,) if revisions else ())
+    )
     return {
         name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in selected
     }
@@ -100,6 +149,21 @@ def _validate(connection: sqlite3.Connection) -> dict[str, int]:
                     validate_environment_row(table, dict(zip(columns, row, strict=True)))
                 except (ValueError, TypeError, KeyError, RecursionError):
                     raise BackupError("backup_environment_payload_invalid") from None
+    if "environment_index_schema" in counts:
+        try:
+            validate_index(connection)
+        except Exception:
+            raise BackupError("backup_environment_index_invalid") from None
+    if "analysis_schema" in counts:
+        try:
+            validate_analysis(connection)
+        except Exception:
+            raise BackupError("backup_analysis_invalid") from None
+    if "sleep_analysis_schema" in counts:
+        try:
+            validate_reports(connection)
+        except Exception:
+            raise BackupError("backup_sleep_analysis_invalid") from None
     return counts
 
 
@@ -126,6 +190,8 @@ def create_backup(settings: Settings) -> dict:
     temporary = None
     try:
         source_path = settings.data_dir / "sleepscape.sqlite3"
+        if source_path.is_file() and not source_path.is_symlink():
+            require_capacity(settings.data_dir, "backup", source_size(source_path) * 2)
         with closing(_readonly(source_path)) as source:
             directory = settings.data_dir / "backups"
             if directory.is_symlink():
@@ -155,7 +221,11 @@ def create_backup(settings: Settings) -> dict:
         }
     except BackupError:
         raise
-    except Exception:
+    except CapacityError:
+        raise BackupError("backup_capacity_blocked") from None
+    except Exception as exc:
+        if is_disk_full(exc):
+            raise BackupError("backup_storage_full") from None
         raise BackupError("backup_failed") from None
     finally:
         if temporary is not None:
@@ -169,7 +239,10 @@ def check_restore(settings: Settings, backup: Path) -> dict:
     """Restore into a private disposable directory, never the live database."""
     try:
         path = backup if backup.is_absolute() else settings.data_dir / backup
-        with TemporaryDirectory(prefix="sleepscape-restore-") as directory:
+        if path.is_file() and not path.is_symlink():
+            require_capacity(settings.data_dir, "backup", source_size(path) * 2)
+        settings.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix=".sleepscape-restore-", dir=settings.data_dir) as directory:
             temporary = Path(directory)
             temporary.chmod(0o700)
             restored = temporary / "restored.sqlite3"
@@ -191,5 +264,9 @@ def check_restore(settings: Settings, backup: Path) -> dict:
         }
     except BackupError:
         raise
-    except Exception:
+    except CapacityError:
+        raise BackupError("backup_capacity_blocked") from None
+    except Exception as exc:
+        if is_disk_full(exc):
+            raise BackupError("backup_storage_full") from None
         raise BackupError("backup_restore_failed") from None

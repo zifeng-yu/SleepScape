@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 const NIGHT = "2026-11-09";
-const NIGHT_URL = `/?view=night&date=${NIGHT}`;
+const NIGHT_URL = `/sleep?view=night&date=${NIGHT}`;
 const timelineResponse = (response) =>
     response.url().includes(`/nights/${NIGHT}/timeline?`) &&
     response.status() === 200;
@@ -29,6 +29,33 @@ async function openNight(page) {
     );
 }
 
+function analysisPayload(night = NIGHT, overrides = {}) {
+    return {
+        night_date: night,
+        implementation_stage: "reports",
+        data_state: "not_evaluated",
+        execution_state: "not_configured",
+        model: {
+            model: "qwen3.8-max",
+            enabled: false,
+            configured: false,
+            configuration_state: "not_configured",
+            connection_state: "not_checked",
+            last_check_at: null,
+            last_check_status: null,
+            last_error_code: null,
+            usage: {},
+            budget: { used: 0, limit: 30, remaining: 30 },
+        },
+        readiness: null,
+        automatic_enabled: false,
+        missing: [],
+        blockers: ["model_not_configured"],
+        report: null,
+        ...overrides,
+    };
+}
+
 async function settleTimeline(page, action) {
     const responsePromise = page.waitForResponse(timelineResponse);
     await action();
@@ -41,6 +68,14 @@ async function settleTimeline(page, action) {
     return payload;
 }
 
+function visibleCanvasY(page, box, offset = 80) {
+    // The expanded tracks may be taller than the viewport after scrolling.
+    // Place gestures in the visible canvas instead of an offscreen row header.
+    const top = Math.max(12, box.y + 1);
+    const bottom = Math.min(page.viewportSize().height - 12, box.y + box.height - 1);
+    return Math.max(top, Math.min(bottom, box.y + offset));
+}
+
 async function plotPoint(page, payload, timestamp, relativeY = 80) {
     const canvas = page.locator(".chart-canvas");
     await canvas.scrollIntoViewIfNeeded();
@@ -51,7 +86,7 @@ async function plotPoint(page, payload, timestamp, relativeY = 80) {
         (Date.parse(payload.window.end) - Date.parse(payload.window.start));
     return {
         x: box.x + left + fraction * (box.width - left - 14),
-        y: box.y + relativeY,
+        y: visibleCanvasY(page, box, relativeY),
     };
 }
 
@@ -61,6 +96,8 @@ test("night cards preserve values, expose sources, and use icon-only date contro
     await page.setViewportSize({ width: 1440, height: 1050 });
     await openNight(page);
     await expect(page.locator(".metric-card")).toHaveCount(4);
+    await expect(page.locator("#sleep-analysis-panel")).toContainText("尚无当前配置的已完成请求");
+    await expect(page.locator("#sleep-analysis-panel")).not.toContainText("请求状态不可用");
     await expect(
         page.getByRole("button", { name: "上一晚", exact: true }),
     ).toHaveText("");
@@ -117,6 +154,191 @@ test("date navigation, empty dates, refresh and browser history preserve the sel
     await expect(page.locator(".chart-canvas")).toBeVisible();
 });
 
+test("report panel shows missing configuration without inventing unchecked data gaps or calling models", async ({
+    page,
+}) => {
+    const methods = [];
+    page.on("request", (request) => {
+        if (request.url().includes("/api/")) methods.push(request.method());
+    });
+    let reads = 0;
+    await page.route("**/api/v1/nights/*/analysis", (route) => {
+        reads += 1;
+        return route.fulfill({ json: analysisPayload() });
+    });
+    await openNight(page);
+    const panel = page.locator("#sleep-analysis-panel");
+    await expect(panel).toHaveAttribute("aria-busy", "false");
+    await expect(panel).toContainText("模型未配置");
+    await expect(panel).toContainText("尚无当前配置的已完成请求");
+    await expect(panel).toContainText("本晚尚无可用的完整性检查");
+    await expect(panel.locator(".readiness-missing")).toHaveCount(0);
+    await expect(panel.getByRole("button")).toHaveCount(0);
+    await page.getByRole("button", { name: "重新读取本地数据" }).click();
+    await expect.poll(() => reads).toBe(2);
+    await expect(panel).toHaveAttribute("aria-busy", "false");
+    expect(methods.every((method) => method === "GET")).toBe(true);
+});
+
+test("analysis endpoint failure stays inside its own card and can be refreshed", async ({
+    page,
+}) => {
+    await page.route("**/api/v1/nights/*/analysis", (route) =>
+        route.fulfill({ status: 503, json: { detail: "synthetic_error" } }),
+    );
+    await openNight(page);
+    const panel = page.locator("#sleep-analysis-panel");
+    await expect(panel).toContainText("暂时无法读取分析状态");
+    await expect(page.locator(".metric-card")).toHaveCount(4);
+    await expect(page.locator(".chart-canvas")).toBeVisible();
+    await expect(page.locator("#notice")).toBeHidden();
+    await page.unroute("**/api/v1/nights/*/analysis");
+    await page.route("**/api/v1/nights/*/analysis", (route) =>
+        route.fulfill({ json: analysisPayload() }),
+    );
+    await page.getByRole("button", { name: "重新读取本地数据" }).click();
+    await expect(panel).toContainText("模型未配置");
+});
+
+test("a delayed analysis response cannot replace the selected night's state", async ({
+    page,
+}) => {
+    let releaseFirst;
+    const pending = new Promise((resolve) => { releaseFirst = resolve; });
+    let firstRequested = false;
+    let firstSettled = false;
+    await page.route("**/api/v1/nights/*/analysis", async (route) => {
+        const night = route.request().url().split("/").at(-2);
+        if (night === NIGHT) {
+            firstRequested = true;
+            await pending;
+        }
+        await route.fulfill({
+            json: analysisPayload(night, {
+                execution_state: night === NIGHT ? "disabled" : "queued",
+            }),
+        }).catch(() => {}); // The old navigation's request is deliberately aborted.
+        if (night === NIGHT) firstSettled = true;
+    });
+    try {
+        await openNight(page);
+        await expect.poll(() => firstRequested).toBe(true);
+        await page.getByRole("button", { name: "上一晚", exact: true }).click();
+        await expect(page).toHaveURL(/date=2026-11-08/);
+        const panel = page.locator("#sleep-analysis-panel");
+        await expect(panel.locator(".report-badge")).toHaveText("等待生成");
+        releaseFirst();
+        await expect.poll(() => firstSettled).toBe(true);
+        await expect(panel.locator(".report-badge")).toHaveText("等待生成");
+        await expect(page.locator(".chart-canvas")).toBeVisible();
+    } finally {
+        releaseFirst();
+    }
+});
+
+test("model status renders bounded public evidence while rejecting secrets and HTML", async ({
+    page,
+}) => {
+    const marker = "SYNTHETIC_MODEL_SECRET_MUST_NOT_RENDER";
+    const unsafe = `<img src=x onerror="window.modelInjection=true">${marker}`;
+    const model = {
+        ...analysisPayload().model,
+        configured: true,
+        enabled: true,
+        configuration_state: "configured",
+        connection_state: "failed",
+        last_check_status: "failed",
+        last_check_at: "2026-11-09T01:00:00Z",
+        last_error_code: "output_schema_required",
+        usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+        budget: { used: 1, limit: 30, remaining: 29 },
+        api_key: unsafe,
+        base_url: `https://${marker}.invalid`,
+        raw_error: unsafe,
+    };
+    await page.route("**/api/v1/status", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ json: { ...await response.json(), model } });
+    });
+    await page.route("**/api/v1/nights/*/analysis", (route) =>
+        route.fulfill({
+            json: analysisPayload(NIGHT, {
+                execution_state: "queued",
+                model,
+                notice: unsafe,
+                missing: [{ source: "garmin", metric: unsafe, date: unsafe }],
+            }),
+        }),
+    );
+    await openNight(page);
+    await expect(page.locator("#sleep-analysis-panel")).toContainText("响应缺少必需字段");
+    await expect(page.locator("#sleep-analysis-panel .analysis-missing")).toHaveCount(0);
+    await page.getByRole("link", { name: "数据状态", exact: true }).click();
+    const panel = page.locator("#model-status-panel");
+    await expect(panel).toContainText("最近请求未成功");
+    await expect(panel).toContainText("响应缺少必需字段");
+    await expect(panel.locator("dt").filter({ hasText: /^该次请求结果$/ }).locator("xpath=following-sibling::dd[1]")).toHaveText("响应缺少必需字段");
+    await expect(panel).toContainText("报告是否已生成请查看对应夜晚详情");
+    await expect(panel).not.toContainText("连接核验失败");
+    await expect(panel).toContainText("输入 Token");
+    await expect(panel).toContainText("18");
+    await expect(panel).toContainText("1 / 30");
+    await expect(panel).toContainText("今日模型请求次数");
+    await expect(panel).toContainText("最近请求时间（共享）");
+    await expect(panel).not.toContainText("最近核验");
+    await expect(panel).toContainText("费用");
+    await expect(panel).toContainText("未知");
+    await expect(page.locator("body")).not.toContainText(marker);
+    await expect(panel.locator("img, script, iframe")).toHaveCount(0);
+    expect(await page.evaluate(() => window.modelInjection)).toBeUndefined();
+});
+
+for (const scenario of ["mismatched night", "unexpected report"]) {
+    test(`report panel rejects ${scenario}`, async ({ page }) => {
+        await page.route("**/api/v1/nights/*/analysis", (route) =>
+            route.fulfill({
+                json: analysisPayload(scenario === "mismatched night" ? "2026-11-08" : NIGHT, {
+                    execution_state: "queued",
+                    report: scenario === "unexpected report"
+                        ? { conclusion: "SYNTHETIC_REPORT_MUST_NOT_RENDER" }
+                        : null,
+                }),
+            }),
+        );
+        await openNight(page);
+        await expect(page.locator("#sleep-analysis-panel")).toContainText("暂时无法读取分析状态");
+        await expect(page.locator("body")).not.toContainText("SYNTHETIC_REPORT_MUST_NOT_RENDER");
+        await expect(page.locator(".chart-canvas")).toBeVisible();
+    });
+}
+
+test("history exposes analysis state and handles absent or unknown summaries", async ({ page }) => {
+    await page.route("**/api/v1/nights?*", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.items = body.items.map((item, index) => ({
+            ...item,
+            analysis_summary: index === 0 ? undefined : {
+                state: "not_evaluated",
+                label: "SYNTHETIC_UNTRUSTED_LABEL_MUST_NOT_RENDER",
+            },
+        }));
+        await route.fulfill({ json: body });
+    });
+    await page.goto(`/sleep?view=history&date=${NIGHT}`);
+    await expect(page.getByRole("columnheader", { name: "完整性检查", exact: true })).toBeVisible();
+    await expect(page.locator(".analysis-history-state")).toHaveCount(7);
+    await expect(
+        page.locator(".analysis-history-state").filter({ hasText: "暂无分析状态" }),
+    ).toHaveCount(1);
+    await expect(
+        page.locator(".analysis-history-state").filter({ hasText: "尚未检查" }),
+    ).toHaveCount(6);
+    await expect(page.locator("body")).not.toContainText(
+        "SYNTHETIC_UNTRUSTED_LABEL_MUST_NOT_RENDER",
+    );
+});
+
 test("legend selection survives URL refresh and restores on browser back", async ({
     page,
 }) => {
@@ -151,7 +373,8 @@ test("linked tooltip reports actual observations and leaves a deliberate heart-r
     await expect(tooltip).toBeVisible();
     await expect(tooltip).toContainText("距光标");
     await expect(tooltip).toContainText("23:10:00");
-    await expect(tooltip.locator(".tooltip-row")).toHaveCount(4);
+    for (const metric of ["heart_rate", "hrv", "spo2", "body_battery"])
+        await expect(tooltip.locator(`.tooltip-row[data-metric="${metric}"]`)).toHaveCount(1);
     await expect(tooltip).toContainText("小时均值");
     const gap = await plotPoint(
         page,
@@ -183,9 +406,9 @@ test("box zoom, keyboard restore and drag panning update all series in a bounded
     await canvas.scrollIntoViewIfNeeded();
     let box = await canvas.boundingBox();
     const zoomed = await settleTimeline(page, async () => {
-        await page.mouse.move(box.x + box.width * 0.35, box.y + 75);
+        await page.mouse.move(box.x + box.width * 0.35, visibleCanvasY(page, box, 75));
         await page.mouse.down();
-        await page.mouse.move(box.x + box.width * 0.7, box.y + 150, {
+        await page.mouse.move(box.x + box.width * 0.7, visibleCanvasY(page, box, 150), {
             steps: 8,
         });
         await page.mouse.up();
@@ -202,9 +425,9 @@ test("box zoom, keyboard restore and drag panning update all series in a bounded
     await canvas.scrollIntoViewIfNeeded();
     box = await canvas.boundingBox();
     const moved = await settleTimeline(page, async () => {
-        await page.mouse.move(box.x + box.width * 0.6, box.y + 75);
+        await page.mouse.move(box.x + box.width * 0.6, visibleCanvasY(page, box, 75));
         await page.mouse.down();
-        await page.mouse.move(box.x + box.width * 0.45, box.y + 75, {
+        await page.mouse.move(box.x + box.width * 0.45, visibleCanvasY(page, box, 75), {
             steps: 8,
         });
         await page.mouse.up();
@@ -245,7 +468,7 @@ test("ordinary wheel scroll is retained, modified wheel zooms, and custom ranges
     expect(requests).toBe(0);
     await canvas.scrollIntoViewIfNeeded();
     const box = await canvas.boundingBox();
-    await page.mouse.move(box.x + box.width / 2, box.y + 80);
+    await page.mouse.move(box.x + box.width / 2, visibleCanvasY(page, box));
     const zoomed = await settleTimeline(page, async () => {
         await page.keyboard.down("Control");
         await page.mouse.wheel(0, -100);
@@ -332,9 +555,8 @@ test("status shows capabilities, storage, and backup boundaries", async ({
     await expect(
         page.getByText("来源尚未提供分期起止区间", { exact: true }),
     ).toBeVisible();
-    await expect(
-        page.getByText("环境硬件尚未接入", { exact: true }),
-    ).toBeVisible();
+    await expect(page.locator("#environment-status-panel")).toBeVisible();
+    await expect(page.getByText("环境看板尚未接入", { exact: true })).toHaveCount(0);
     await expect(
         page.locator(".status-item").filter({ hasText: "备份" }),
     ).toContainText("未配置");
@@ -420,3 +642,14 @@ for (const width of [390, 320]) {
         expect(sizes.document).toBeLessThanOrEqual(sizes.viewport);
     });
 }
+
+test("sleep entry keeps its path while switching views", async ({ page }) => {
+    await page.goto(`/sleep?view=night&date=${NIGHT}`);
+    await expect(page.locator("#demo-label")).toHaveText("演示数据");
+    await page.locator('nav a[data-view="history"]').click();
+    await expect(page).toHaveURL(/\/sleep\?.*view=history/);
+    await page.reload();
+    await expect(page.locator("#demo-label")).toHaveText("演示数据");
+    await page.locator('nav a[data-view="night"]').click();
+    await expect(page).toHaveURL(/\/sleep\?.*view=night/);
+});

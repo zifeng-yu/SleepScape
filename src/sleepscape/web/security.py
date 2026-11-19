@@ -20,6 +20,8 @@ from starlette.responses import JSONResponse
 
 from sleepscape.config import Settings
 
+SESSION_COOKIE = "__Host-sleepscape_session"
+SESSION_SECONDS = 30 * 24 * 60 * 60
 ITERATIONS = 600_000
 AUTH_REALM = 'Basic realm="SleepScape", charset="UTF-8"'
 SECURITY_HEADERS = {
@@ -159,6 +161,48 @@ class AccessGate:
                     self.cache.popitem(last=False)
         return valid
 
+    def _session_signature(self, payload: str) -> str:
+        record, _ = self._load()
+        # Domain-separated signing material: persists across restarts and changes
+        # with the password record. The stored password verifier never leaves here.
+        key = hmac.digest(
+            bytes.fromhex(record["digest"]),
+            b"sleepscape-browser-session-1:" + json.dumps(record, sort_keys=True).encode(),
+            "sha256",
+        )
+        return hmac.digest(key, payload.encode(), "sha256").hex()
+
+    def _new_session(self) -> str:
+        payload = f"{int(time.time()) + SESSION_SECONDS}.{secrets.token_hex(16)}"
+        return f"{payload}.{self._session_signature(payload)}"
+
+    def _verify_session(self, token: str) -> bool:
+        if len(token) > 256:
+            return False
+        try:
+            expiry, nonce, signature = token.split(".")
+            remaining = int(expiry) - time.time()
+            if not 0 < remaining <= SESSION_SECONDS or len(nonce) != 32:
+                return False
+        except (ValueError, TypeError):
+            return False
+        return hmac.compare_digest(
+            signature.encode(), self._session_signature(f"{expiry}.{nonce}").encode()
+        )
+
+    def attach_session(self, request, response):
+        token = getattr(request.state, "new_browser_session", None)
+        if token is not None:
+            response.set_cookie(
+                SESSION_COOKIE,
+                token,
+                max_age=SESSION_SECONDS,
+                secure=True,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
+
     async def check(self, request):
         if request.method not in {"GET", "HEAD"}:
             return JSONResponse({"error": "read_only_service"}, status_code=405)
@@ -167,8 +211,11 @@ class AccessGate:
             host == "::1" and "[::1]" in self.settings.web_allowed_hosts
         ):
             return JSONResponse({"error": "host_not_allowed"}, status_code=400)
+        if request.url.path == "/":
+            return JSONResponse({"error": "not_found"}, status_code=404)
         top_level_entry = (
-            request.url.path == "/" and request.headers.get("sec-fetch-mode") == "navigate"
+            request.url.path in {"/sleep", "/sleep/"}
+            and request.headers.get("sec-fetch-mode") == "navigate"
         )
         if request.headers.get("sec-fetch-site") == "cross-site" and not top_level_entry:
             return JSONResponse({"error": "cross_site_request_blocked"}, status_code=403)
@@ -193,9 +240,15 @@ class AccessGate:
         if not direct_local and request.url.scheme != "https":
             return JSONResponse({"error": "https_required"}, status_code=403)
         try:
-            verified = await run_in_threadpool(
-                self._verify, request.headers.get("authorization", "")
-            )
+            header = request.headers.get("authorization", "")
+            token = request.cookies.get(SESSION_COOKIE, "")
+            if header:
+                verified = await run_in_threadpool(self._verify, header)
+            else:
+                verified = await run_in_threadpool(self._verify_session, token)
+            if verified and header and request.url.scheme == "https":
+                if not await run_in_threadpool(self._verify_session, token):
+                    request.state.new_browser_session = await run_in_threadpool(self._new_session)
         except ValueError:
             return JSONResponse({"error": "web_auth_unavailable"}, status_code=503)
         if not verified:

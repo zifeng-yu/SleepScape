@@ -1,10 +1,11 @@
 # Template only: this repository does not install or enable timers.
 [Unit]
-Description=SleepScape Garmin sync daily at 09:00 Shanghai time
+Description=SleepScape daily collection at 09:00 Shanghai time
 
 [Timer]
 OnCalendar=*-*-* 09:00:00 Asia/Shanghai
-# Catch up one missed timer activation; garmin-sync determines the history window.
+# Catch up one missed activation; daily-run still respects the configured N-day window.
+# Retain this unit name on upgrade; do not install a second daily collector.
 Persistent=true
 AccuracySec=1min
 Unit=garmin-sync.service

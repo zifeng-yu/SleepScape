@@ -1,0 +1,36 @@
+# Dedicated to SleepScape; does not replace nginx or a host-wide caddy.service.
+# Requires a system user/group named caddy and a readable Caddyfile/site.env.
+[Unit]
+Description=SleepScape HTTPS proxy and automatic IP certificates
+Documentation=https://caddyserver.com/docs/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/caddy-sleepscape/site.env
+Environment=XDG_CONFIG_HOME=/var/lib/caddy-sleepscape/config
+Environment=XDG_DATA_HOME=/var/lib/caddy-sleepscape/data
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy-sleepscape/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy-sleepscape/Caddyfile --adapter caddyfile --force
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+LimitNOFILE=65536
+UMask=0077
+StateDirectory=caddy-sleepscape
+StateDirectoryMode=0700
+RuntimeDirectory=caddy-sleepscape
+RuntimeDirectoryMode=0700
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

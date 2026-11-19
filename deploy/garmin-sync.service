@@ -1,6 +1,6 @@
 # Template only: no Key/token belongs in this file or ExecStart arguments.
 [Unit]
-Description=SleepScape bounded Garmin synchronization
+Description=SleepScape daily collection orchestration
 Wants=network-online.target
 After=network-online.target time-sync.target
 
@@ -12,8 +12,9 @@ WorkingDirectory=/opt/sleepscape
 EnvironmentFile=/opt/sleepscape/.env
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/sleepscape/.venv/bin/sleepscape garmin-sync
-TimeoutStartSec=20min
+ExecStart=/opt/sleepscape/.venv/bin/sleepscape daily-run
+# Up to 30 model calls at 180 seconds each, plus collection and bounded retry waits.
+TimeoutStartSec=2h
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
