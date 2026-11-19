@@ -52,6 +52,7 @@ ERROR_CODES = frozenset(
         "backup_analysis_invalid",
         "backup_sleep_analysis_schema_invalid",
         "backup_sleep_analysis_invalid",
+        "backup_morning_feeling_invalid",
         "backup_restore_counts_mismatch",
     }
 )

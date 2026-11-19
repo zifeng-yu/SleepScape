@@ -16,6 +16,7 @@ from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
 from sleepscape.storage import Repository
 from sleepscape.storage import environment as environment_storage
 from sleepscape.storage.environment_index import migrate_index, rebuild_index
+from sleepscape.storage.morning_feeling import migrate as migrate_morning_feeling
 
 END = date(2026, 11, 9)
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -410,4 +411,6 @@ if __name__ == "__main__":
             llm_endpoint=None,
             llm_key_file=root / "unused-model-key",
         )
+        # Seed only the disposable fixture schema; backup state has its own scenarios.
+        migrate_morning_feeling(settings.data_dir)
         uvicorn.run(create_app(settings), host="127.0.0.1", port=8766, access_log=False)

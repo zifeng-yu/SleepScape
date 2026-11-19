@@ -1,4 +1,5 @@
 /* Page state and view coordination. Health data remains in memory only. */
+import { morningFeeling } from "./morning-feeling.js";
 import { api, errorText } from "./api.js";
 import { $, el, add, button, icon, chip } from "./dom.js";
 import {
@@ -227,11 +228,18 @@ async function loadView(refreshStatus = false) {
         state.mode = state.pendingWindow ? "custom" : "night";
         state.window = state.pendingWindow;
         state.pendingWindow = null;
+        const toolbar = dateToolbar();
+        toolbar.append(morningFeeling(state.date, state.abort.signal));
+        content.replaceChildren(toolbar);
         let night;
         try {
             night = await api(`nights/${state.date}`, state.abort.signal);
         } catch (error) {
-            if (error.status !== 404) throw error;
+            if (error.status !== 404) {
+                if (generation === state.generation)
+                    content.append(empty("数据暂时无法读取", errorText(error)));
+                return;
+            }
             night = null;
         }
         if (generation !== state.generation) return;
@@ -446,7 +454,6 @@ function metricCard(title, key, symbol, night) {
     return root;
 }
 function renderNight(night) {
-    content.replaceChildren(dateToolbar());
     if (!night) {
         const waiting = dashboardStartDate() && !validDate(state.status?.latest_night);
         content.append(

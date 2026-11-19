@@ -2004,6 +2004,8 @@ main {
     .report-summary,
     .report-observation-group,
     .report-item { padding: 15px; }
+    .report-evidence-card .analysis-facts { grid-template-columns: 76px minmax(0, 1fr); }
+    .report-evidence-card dd { overflow-wrap: anywhere; padding-inline-end: 0.5em; }
     .report-evidence-link { min-height: 36px; }
 }
 
@@ -2011,3 +2013,23 @@ main {
 .quality-heading h2 { font-size: 16px; }
 .quality-details > summary { padding-block: 5px; }
 .report-summary .report-prose { font-size: clamp(16px, 1.4vw, 19px); line-height: 1.75; }
+
+.morning-feeling {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-size: 13px;
+}
+.feeling-choice {
+    padding: 5px 10px;
+    border: 1px solid currentColor;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--ink);
+}
+.feeling-choice[aria-pressed="true"] {
+    background: var(--ink);
+    color: white;
+}
+.feeling-status { color: var(--muted); }

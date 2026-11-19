@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import stat
 import time
@@ -204,7 +205,14 @@ class AccessGate:
             )
 
     async def check(self, request):
-        if request.method not in {"GET", "HEAD"}:
+        rating_write = request.method == "PUT" and re.fullmatch(
+            r"/api/v1/nights/[0-9]{4}-[0-9]{2}-[0-9]{2}/morning-feeling", request.url.path
+        )
+        if rating_write:
+            origin = f"{request.url.scheme}://{request.url.netloc}"
+            if request.headers.getlist("origin") != [origin]:
+                return JSONResponse({"error": "same_origin_required"}, status_code=403)
+        elif request.method not in {"GET", "HEAD"}:
             return JSONResponse({"error": "read_only_service"}, status_code=405)
         host = request.url.hostname
         if host not in self.settings.web_allowed_hosts and not (

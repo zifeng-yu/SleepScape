@@ -66,6 +66,18 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 保存样本数和有效样本数；观测间隔不等于已确认的设备采样标准。
 预期频率未确认时，时间覆盖率保持空值，不用样本数量冒充连续覆盖率，不默认插值。
 
+## 晨起睡感记录
+
+在现有私有 SQLite 中使用独立表 `morning_feeling`，每个看板醒来日期一行。仅保存以下三项：
+
+| 字段 | 定义 |
+| --- | --- |
+| `night_date` | 主键，取点击时看板显示的日期（YYYY-MM-DD），与采集记录无外键依赖。 |
+| `feeling` | 必填枚举，`poor` 为较差、`fair` 为一般、`good` 为较好。无行表示未填。 |
+| `filled_at` | 服务端记录的 UTC 时间，表示最近一次实际填写或改选时间。补填仍归所选日期，时间记录实际写入时刻。 |
+
+使用 `GET /api/v1/nights/{day}/morning-feeling` 读取，成功时返回该日记录或空值。使用同一路径的 `PUT` 提交，仅接收 `feeling`；日期取路径，沿用夜晚入口日期范围。首次插入，改选在事务内更新值及时间，同值重复提交返回现有记录并保留时间。多个客户端同时改选时取最后成功提交的值。返回成功以 SQLite 提交为准；表未准备好或读写失败须返回错误。只保存当前选择与最近填写时间。睡感独立于设备事实、分析资格、模型证据及已发布报告。
+
 ## 看板睡眠日期展示边界
 
 可选`SLEEPSCAPE_DASHBOARD_START_DATE`为严格`YYYY-MM-DD`日期，范围2000-01-01至2100-12-31；空值默认不裁剪。其含义为最早可展示的**睡眠归属日**，不是采集或存储起点。
@@ -169,7 +181,7 @@ state按观测区分`available/missing/invalid/stale/unavailable`；具体字段
 
 页面入口为`GET /sleep`和`GET /sleep/`；根路径`/`的GET/HEAD在合法Host下返回404（含查询参数、匿名或已登录），无Location和WWW-Authenticate。静态资源、业务API、设备POST及`/health`路径不变。
 
-页面及业务API只读且同源，响应不缓存；应用HTTP Basic校验私有PBKDF2哈希，Caddy保留Authorization。HTTPS认证后可签发`__Host-sleepscape_session`：固定30天（2592000秒）、Secure、HttpOnly、SameSite=Lax、Path=/、无Domain；使用到期时间、随机nonce和HMAC签名，不含密码或健康数据。签名绑定当前私有密码记录，重启不失效，改密码记录立即失效；到期或篡改拒绝认证，访问不滑动续期。显式Authorization优先校验，设备POST不接受浏览器Cookie授权。
+页面查询只读，浏览器同源写入仅限晨起睡感，响应不缓存；应用HTTP Basic校验私有PBKDF2哈希，Caddy保留Authorization。HTTPS认证后可签发`__Host-sleepscape_session`：固定30天（2592000秒）、Secure、HttpOnly、SameSite=Lax、Path=/、无Domain；使用到期时间、随机nonce和HMAC签名，不含密码或健康数据。签名绑定当前私有密码记录，重启不失效，改密码记录立即失效；到期或篡改拒绝认证，访问不滑动续期。显式Authorization优先校验，设备POST不接受浏览器Cookie授权。
 未设密码仅允许本机直接访问，远程健康数据请求需要HTTPS；`/health`不含健康数据。`/docs`始终关闭，debug仅可开放受保护的`/openapi.json`，默认关闭，不加载CDN；云端TLS与代理验收单独记录。
 
 ## 备份状态合同

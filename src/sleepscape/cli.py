@@ -79,6 +79,7 @@ def main() -> None:
         "--retry", action="store_true", help="显式重试当日未完成任务，仍遵守Retry-After"
     )
     commands.add_parser("daily-status", help="只读每日编排状态；不检查或安装服务器定时器")
+    commands.add_parser("morning-feeling-prepare", help="核验备份并建立晨起睡感表")
     commands.add_parser("analysis-prepare", help="核验备份后显式建立完整性检查表；不调用LLM")
     readiness = commands.add_parser("analysis-check", help="检查单夜或配置N日双源完整性；不联网")
     readiness.add_argument("--date", type=date.fromisoformat, help="睡眠归属日，默认配置的N日窗口")
@@ -117,6 +118,16 @@ def main() -> None:
     commands.add_parser("garmin-audit", help="只读源库，在临时库验证重放、去重及修订保护")
     args = parser.parse_args()
     settings = Settings()
+
+    if args.command == "morning-feeling-prepare":
+        from sleepscape.services.morning_feeling import prepare
+
+        try:
+            emit(prepare(settings))
+        except Exception:
+            emit({"status": "failed", "error_code": "morning_feeling_prepare_failed"})
+            raise SystemExit(1) from None
+        return
 
     if args.command.startswith("maintenance-"):
         from sleepscape.services.maintenance import (

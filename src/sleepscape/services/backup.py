@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from sleepscape.config import Settings
 from sleepscape.domain.environment_integrity import validate_environment_row
+from sleepscape.storage import morning_feeling
 from sleepscape.storage.analysis import ANALYSIS_TABLES, analysis_available, validate_analysis
 from sleepscape.storage.environment import ENVIRONMENT_TABLES, PAYLOAD_TABLES
 from sleepscape.storage.environment_index import INDEX_TABLES, index_available, validate_index
@@ -110,6 +111,7 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
         raise BackupError("backup_sleep_analysis_schema_invalid") from None
     selected = (
         TABLES
+        + (("morning_feeling",) if "morning_feeling" in tables else ())
         + (ENVIRONMENT_TABLES if present else ())
         + (INDEX_TABLES if index_present else ())
         + (ANALYSIS_TABLES if analysis_present else ())
@@ -140,6 +142,11 @@ def _validate(connection: sqlite3.Connection) -> dict[str, int]:
             json.loads(raw)
         except (TypeError, ValueError, zlib.error):
             raise BackupError("backup_raw_json_invalid") from None
+    if "morning_feeling" in counts:
+        try:
+            morning_feeling.validate(connection)
+        except (ValueError, TypeError, sqlite3.Error):
+            raise BackupError("backup_morning_feeling_invalid") from None
     if "environment_schema" in counts:
         for table in PAYLOAD_TABLES:
             cursor = connection.execute(f"SELECT * FROM {table}")

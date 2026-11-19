@@ -1,4 +1,4 @@
-"""Read-only dashboard plus one separately authenticated environment ingestion API."""
+"""Private dashboard with selected-date ratings and separately authenticated device uploads."""
 
 import logging
 from datetime import date, datetime, timedelta
@@ -10,15 +10,22 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
 from sleepscape import __version__
 from sleepscape.config import Settings
 from sleepscape.domain.dashboard_dates import NightBeforeDisplayStart, visible_start
+from sleepscape.domain.morning_feeling import Feeling
 from sleepscape.web.device_security import INGEST_PATH, DeviceGate
 from sleepscape.web.security import SECURITY_HEADERS, AccessGate
 
 STATIC_DIR = Path(__file__).parent / "web" / "static"
+
+
+class RatingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    feeling: Feeling
 
 
 def _day(value: date) -> date:
@@ -209,6 +216,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result is None:
             raise HTTPException(404, "night_not_found")
         return result
+
+    @app.get("/api/v1/nights/{day}/morning-feeling")
+    def read_morning_feeling(day: date):
+        from sleepscape.services.morning_feeling import get
+
+        return _query(get, settings, _day(day))
+
+    @app.put("/api/v1/nights/{day}/morning-feeling")
+    def set_morning_feeling(day: date, body: RatingInput):
+        from sleepscape.services.morning_feeling import put
+
+        return _query(put, settings, _day(day), body.feeling)
 
     @app.get("/api/v1/nights/{day}/analysis")
     def analysis(day: date):

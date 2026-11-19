@@ -1,9 +1,10 @@
-/* Same-origin, read-only API transport. Never stores health data or Garmin credentials. */
-async function api(path, signal) {
+/* Same-origin API transport. Never stores health data or Garmin credentials. */
+async function api(path, signal, options = {}) {
     const response = await fetch(`/api/v1/${path}`, {
+        ...options,
         credentials: "same-origin",
         cache: "no-store",
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", ...options.headers },
         signal,
     });
     if (!response.ok) {

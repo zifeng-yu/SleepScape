@@ -14,6 +14,12 @@ SleepScape用于个人睡眠观测。系统收集Garmin及卧室环境数据，�
 - 程序和文档只维护一套当前实现；原始观测修订、请求审计和数据备份属于必要数据。
 - 必要回归测试保留，截图、测试报告、缓存及构建产物可重建，不作为源文件长期维护。
 
+## 晨起睡感的分层设计
+
+领域层定义三档取值；存储层在现有 SQLite 中独立读写，复用容量准入和事务；服务层协调按日查询、保存及服务端时间。HTTP 层验证日期、载荷和权限，前端仅负责显示、读写请求与切日交互。读取路径保持只读，显式迁移前先完成备份和临时恢复核验，备份校验兼容无此表的现存备份，并覆盖新表结构和记录。
+
+浏览器写入仅开放给[数据契约](data-contract.md#晨起睡感记录)规定的精确方法和路径。复用看板身份校验与 Host 检查，生产要求 HTTPS、已认证且请求来源与看板同源；本机模式沿用直接回环边界并检查同源。设备令牌只用于既有采集入口。浏览器刷新、日任务和模型流程均无睡感写入职责。
+
 ## 文档职责
 
 | 文件 | 唯一职责 |
@@ -51,7 +57,7 @@ SleepScape用于个人睡眠观测。系统收集Garmin及卧室环境数据，�
            sleep_inputs/domain特征      model_call/models
                                ↓                       ↓
                  storage.sleep_analysis ← 输出校验与事务内来源复查
-                      唯一报告/证据 → 只读看板
+                      唯一报告/证据 → 看板只读展示
 
 显式CLI / 已启用04:00定时器 → services.maintenance → services.backup_bundle
                                ↓                        ↓
@@ -70,6 +76,8 @@ Garmin官方API → adapters → services：采集/核验
 浏览器页面 → 同源只读GET → services：视图/查询 ─────────────────────┘
      ↓
 注册表 / 格式化 / Garmin与环境共轴图表 / 设备状态 / 每日任务卡 / 维护卡 / LLM资格、报告与生成时证据
+
+看板头部 → 同源认证 PUT → services.morning_feeling → storage.morning_feeling → 私有 SQLite
 
 显式合成模型核验 → services.model_health → services.model_call：有界子进程
                             ↓                          ↓
