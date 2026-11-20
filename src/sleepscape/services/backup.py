@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from sleepscape.config import Settings
 from sleepscape.domain.environment_integrity import validate_environment_row
-from sleepscape.storage import morning_feeling
+from sleepscape.storage import morning_feeling, weekly_review
 from sleepscape.storage.analysis import ANALYSIS_TABLES, analysis_available, validate_analysis
 from sleepscape.storage.environment import ENVIRONMENT_TABLES, PAYLOAD_TABLES
 from sleepscape.storage.environment_index import INDEX_TABLES, index_available, validate_index
@@ -109,6 +109,10 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
             raise BackupError("backup_sleep_analysis_schema_invalid")
     except Exception:
         raise BackupError("backup_sleep_analysis_schema_invalid") from None
+    try:
+        review_tables = weekly_review.table_names(connection)
+    except Exception:
+        raise BackupError("backup_sleep_review_schema_invalid") from None
     selected = (
         TABLES
         + (("morning_feeling",) if "morning_feeling" in tables else ())
@@ -117,6 +121,7 @@ def _counts(connection: sqlite3.Connection) -> dict[str, int]:
         + (ANALYSIS_TABLES if analysis_present else ())
         + (REPORT_TABLES if reports_present else ())
         + ((REVISION_TABLE,) if revisions else ())
+        + review_tables
     )
     return {
         name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in selected
@@ -171,6 +176,11 @@ def _validate(connection: sqlite3.Connection) -> dict[str, int]:
             validate_reports(connection)
         except Exception:
             raise BackupError("backup_sleep_analysis_invalid") from None
+    if "sleep_review_schema" in counts:
+        try:
+            weekly_review.validate(connection)
+        except Exception:
+            raise BackupError("backup_sleep_review_invalid") from None
     return counts
 
 

@@ -17,6 +17,7 @@ from test_readiness_service import data as readiness_data
 from sleepscape.app import create_app
 from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
+from sleepscape.domain.morning_feeling import Feeling
 from sleepscape.models.base import OUTPUT_SCHEMA_ERRORS, ModelError, ModelResult
 from sleepscape.models.openai_compatible import MAX_MESSAGE_BYTES, _payload
 from sleepscape.models.settings import configuration_fingerprint, load_model_settings
@@ -29,7 +30,7 @@ from sleepscape.resources import (
 from sleepscape.services import daily, readiness
 from sleepscape.services import sleep_analysis as service
 from sleepscape.services.sleep_inputs import read_snapshot
-from sleepscape.storage import environment
+from sleepscape.storage import environment, morning_feeling
 from sleepscape.storage import model_runtime as runtime
 from sleepscape.storage import sleep_analysis as store
 from sleepscape.storage.daily_runtime import collection_busy
@@ -820,6 +821,28 @@ def test_source_changed_keeps_original_report_and_unknown_current_data_also_keep
     assert unknown["report"]["source_changed"] is None
     settings.llm_enabled = False
     assert service.report_state(settings, DAY, readiness=current)["execution_state"] == "complete"
+    assert store.read_report(settings.data_dir, str(DAY)) == original
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_morning_feeling_edits_preserve_published_report_and_historical_inputs(prepared, recorded):
+    settings, _ = prepared
+    morning_feeling.migrate(settings.data_dir)
+    if recorded:
+        morning_feeling.save(settings.data_dir, DAY, Feeling.GOOD)
+    assert run(settings)["model_calls"] == 1
+    original = store.read_report(settings.data_dir, str(DAY))
+    current = readiness.evaluate_night(settings, DAY, now=NOW)
+    assert (
+        service.report_state(settings, DAY, readiness=current)["report"]["source_changed"] is False
+    )
+
+    morning_feeling.save(settings.data_dir, DAY, Feeling.POOR)
+    report = service.report_state(settings, DAY, readiness=current)["report"]
+    assert report["source_changed"] is recorded
+    expected = {"id": "F000", "value": "good"} if recorded else None
+    assert report["evidence"].get("morning_feeling") == expected
+    assert run(settings)["model_calls"] == 0
     assert store.read_report(settings.data_dir, str(DAY)) == original
 
 

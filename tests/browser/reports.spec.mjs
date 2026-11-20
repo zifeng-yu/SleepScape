@@ -93,6 +93,22 @@ test("published report exposes four observation classes, retained gaps and click
     await report.screenshot({ path: info.outputPath("synthetic-sleep-report-desktop.png") });
 });
 
+test("an optional morning rating is shown as cited generation-time evidence", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const value = payload();
+    value.report.evidence.morning_feeling = { id: "F000", value: "good" };
+    value.report.content.summary.evidence_ids.push("F000");
+    await route(page, value);
+    const panel = await open(page);
+    const report = panel.locator(".sleep-report");
+    await report.getByRole("button", { name: "查看证据 F000", exact: true }).press("Enter");
+    const evidence = report.locator(`#report-${NIGHT}-F000`);
+    await expect(evidence).toBeFocused();
+    await expect(evidence).toContainText("晨起睡感");
+    await expect(evidence).toContainText("较好");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 for (const readinessUnavailable of [false, true]) {
     test(`published report stays successful despite a failed shared request, readiness unavailable ${readinessUnavailable}`, async ({ page }) => {
         const value = payload();

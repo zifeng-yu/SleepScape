@@ -168,6 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         end: date | None = None,
         cursor: date | None = None,
         limit: Annotated[int, Query(ge=1, le=92)] = 31,
+        include_review: bool = False,
     ):
         view = service()
         if end is None:
@@ -186,7 +187,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, "history_window_requires_1_to_92_days")
         if cursor is not None and not start <= cursor <= end:
             raise HTTPException(422, "cursor_outside_window")
-        return _query(view.nights, start, end, cursor=cursor, limit=limit)
+        return _query(
+            view.nights, start, end, cursor=cursor, limit=limit, include_review=include_review
+        )
 
     @app.get("/api/v1/nights/{day}")
     def night(day: date):
@@ -234,6 +237,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from sleepscape.services.analysis_views import analysis_view
 
         return _query(analysis_view, settings, _day(day))
+
+    @app.get("/api/v1/sleep-reviews/{day}")
+    def weekly_sleep_review(day: date):
+        from sleepscape.services.weekly_review import review_view
+
+        return _query(review_view, settings, _day(day))
 
     @app.get("/health", tags=["service"])
     def health() -> dict[str, str]:

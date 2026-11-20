@@ -1,0 +1,508 @@
+{
+  "input": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "window": {
+        "type": "object",
+        "properties": {
+          "start_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "end_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "visible_n": {
+            "$ref": "#/$defs/nights"
+          },
+          "eligible_n": {
+            "$ref": "#/$defs/nights"
+          }
+        },
+        "required": [
+          "start_date",
+          "end_date",
+          "visible_n",
+          "eligible_n"
+        ],
+        "additionalProperties": false
+      },
+      "quality": {
+        "type": "object",
+        "properties": {
+          "feeling_state": {
+            "enum": [
+              "available",
+              "not_prepared",
+              "unavailable"
+            ]
+          },
+          "feeling_counts": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "poor": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 7
+                  },
+                  "fair": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 7
+                  },
+                  "good": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 7
+                  },
+                  "unfilled": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 7
+                  }
+                },
+                "required": [
+                  "poor",
+                  "fair",
+                  "good",
+                  "unfilled"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limits": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 48,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z_0-9]{0,79}$"
+            }
+          }
+        },
+        "required": [
+          "feeling_state",
+          "feeling_counts",
+          "limits"
+        ],
+        "additionalProperties": false
+      },
+      "aggregates": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 34,
+        "items": {
+          "$ref": "#/$defs/aggregate"
+        }
+      },
+      "comparisons": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 34,
+        "items": {
+          "$ref": "#/$defs/comparison"
+        }
+      },
+      "nights": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 7,
+        "items": {
+          "$ref": "#/$defs/night"
+        }
+      },
+      "examples": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 2,
+        "items": {
+          "type": "string",
+          "pattern": "^N[1-7]$"
+        },
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "window",
+      "quality",
+      "aggregates",
+      "comparisons",
+      "nights",
+      "examples"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "nights": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 7
+      },
+      "aggregate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^A[1-9][0-9]?$"
+          },
+          "metric": {
+            "enum": [
+              "sleep_seconds",
+              "sleep_start_offset_seconds",
+              "sleep_end_offset_seconds",
+              "average_heart_rate",
+              "night_average_hrv",
+              "training_load",
+              "temperature_c",
+              "relative_humidity_pct",
+              "illuminance_lux",
+              "sound_relative"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "s",
+              "bpm",
+              "ms",
+              "load",
+              "degC",
+              "percent",
+              "lx",
+              "dBFS"
+            ]
+          },
+          "environment_group": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^G[1-7]$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "median": {
+            "type": "number"
+          },
+          "valid_n": {
+            "$ref": "#/$defs/nights"
+          }
+        },
+        "required": [
+          "id",
+          "metric",
+          "unit",
+          "environment_group",
+          "median",
+          "valid_n"
+        ],
+        "additionalProperties": false
+      },
+      "comparison": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^C[1-9][0-9]?$"
+          },
+          "metric": {
+            "enum": [
+              "sleep_seconds",
+              "sleep_start_offset_seconds",
+              "sleep_end_offset_seconds",
+              "average_heart_rate",
+              "night_average_hrv",
+              "training_load",
+              "temperature_c",
+              "relative_humidity_pct",
+              "illuminance_lux",
+              "sound_relative"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "s",
+              "bpm",
+              "ms",
+              "load",
+              "degC",
+              "percent",
+              "lx",
+              "dBFS"
+            ]
+          },
+          "environment_group": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^G[1-7]$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "poor_n": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 7
+          },
+          "good_n": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 7
+          },
+          "poor_median": {
+            "type": "number"
+          },
+          "good_median": {
+            "type": "number"
+          },
+          "difference": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "metric",
+          "unit",
+          "environment_group",
+          "poor_n",
+          "good_n",
+          "poor_median",
+          "good_median",
+          "difference"
+        ],
+        "additionalProperties": false
+      },
+      "night": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^N[1-7]$"
+          },
+          "night_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "quality": {
+            "enum": [
+              "complete",
+              "with_gaps"
+            ]
+          },
+          "metrics": {
+            "type": "object",
+            "properties": {
+              "sleep_seconds": {
+                "type": "number"
+              },
+              "sleep_start_offset_seconds": {
+                "type": "number"
+              },
+              "sleep_end_offset_seconds": {
+                "type": "number"
+              },
+              "average_heart_rate": {
+                "type": "number"
+              },
+              "night_average_hrv": {
+                "type": "number"
+              },
+              "training_load": {
+                "type": "number"
+              },
+              "temperature_c": {
+                "type": "number"
+              },
+              "relative_humidity_pct": {
+                "type": "number"
+              },
+              "illuminance_lux": {
+                "type": "number"
+              },
+              "sound_relative": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "sleep_seconds",
+              "average_heart_rate",
+              "night_average_hrv",
+              "training_load",
+              "temperature_c",
+              "relative_humidity_pct",
+              "illuminance_lux",
+              "sound_relative"
+            ],
+            "additionalProperties": false
+          },
+          "limits": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 48,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z_0-9]{0,79}$"
+            }
+          },
+          "environment_group": {
+            "type": "string",
+            "pattern": "^G[1-7]$"
+          },
+          "feeling": {
+            "enum": [
+              "poor",
+              "fair",
+              "good",
+              null
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "night_date",
+          "quality",
+          "metrics",
+          "limits",
+          "environment_group",
+          "feeling"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "output": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "summary": {
+        "$ref": "#/$defs/observation"
+      },
+      "observations": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "items": {
+          "$ref": "#/$defs/observation"
+        }
+      },
+      "hypotheses": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 1,
+        "items": {
+          "$ref": "#/$defs/hypothesis"
+        }
+      },
+      "actions": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 1,
+        "items": {
+          "$ref": "#/$defs/action"
+        }
+      }
+    },
+    "required": [
+      "summary",
+      "observations",
+      "hypotheses",
+      "actions"
+    ],
+    "additionalProperties": false,
+    "$defs": {
+      "text": {
+        "type": "string",
+        "maxLength": 240,
+        "minLength": 1
+      },
+      "observation": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "$ref": "#/$defs/text"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[ACN][1-9][0-9]?$"
+            },
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "text",
+          "evidence_ids"
+        ],
+        "additionalProperties": false
+      },
+      "hypothesis": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "$ref": "#/$defs/text"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[ACN][1-9][0-9]?$"
+            },
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true
+          },
+          "alternative": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "required": [
+          "text",
+          "evidence_ids",
+          "alternative"
+        ],
+        "additionalProperties": false
+      },
+      "action": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "$ref": "#/$defs/text"
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[ACN][1-9][0-9]?$"
+            },
+            "minItems": 1,
+            "maxItems": 6,
+            "uniqueItems": true
+          },
+          "observe": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "required": [
+          "text",
+          "evidence_ids",
+          "observe"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

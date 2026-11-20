@@ -75,13 +75,25 @@ def test_authenticated_same_origin_write_only(settings, tmp_path):
     with TestClient(
         create_app(settings), base_url="https://localhost", client=("192.0.2.9", 443)
     ) as c:
+        review_url = "/api/v1/nights?start=2026-01-07&end=2026-01-07&include_review=true"
 
         def write(origin):
             return c.put(URL, headers={"Origin": origin}, json={"feeling": "fair"})
 
         assert write("https://localhost").status_code == 401
+        assert c.get(review_url).status_code == 401
         assert c.get("/sleep", auth=("owner", "synthetic-password")).status_code == 200
         assert write("https://other.invalid").status_code == 403
         assert c.put(URL, json={"feeling": "good"}).status_code == 403
         assert write("https://localhost").status_code == 200
         assert c.put(URL + "/extra", headers={"Origin": "https://localhost"}).status_code == 405
+        response = c.get(review_url)
+        assert response.status_code == 200 and "no-store" in response.headers["cache-control"]
+        assert response.json()["items"][0]["morning_feeling"] == "fair"
+        assert response.json()["review"]["feeling_counts"] == {
+            "poor": 0,
+            "fair": 1,
+            "good": 0,
+            "unfilled": 0,
+        }
+        assert c.get(review_url.replace("=true", "=unknown")).status_code == 422

@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sleepscape.domain.environment_time import summarize_intervals
+from sleepscape.domain.sleep_window import SLEEP_CONFLICTS, sleep_window, utc_instant
 
 POLICY_VERSION = "dual-source-coverage-1"
 MIN_CHANNEL_COVERAGE = 0.99
@@ -30,14 +31,6 @@ _REQUIRED = (
         True,
     ),
 )
-_CONFLICTS = {
-    "conflicting_duplicate_record",
-    "negative_time_window",
-    "sleep_summary_totals_differ",
-    "invalid_elapsed_duration",
-    "invalid_timestamp",
-    "invalid_timestamp_unit_or_range",
-}
 _CHANNEL_ERRORS = {
     "missing",
     "sensor_error",
@@ -77,14 +70,6 @@ def _count(value):
 
 def _codes(value):
     return {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
-
-
-def _instant(value):
-    try:
-        result = datetime.fromisoformat(value) if isinstance(value, str) else None
-        return result.astimezone(UTC) if result and result.utcoffset() is not None else None
-    except (ValueError, OverflowError):
-        return None
 
 
 def _us(value):
@@ -253,7 +238,7 @@ def _card_state(card, day, unit, resources, previous):
     }[unit]
     if card.get("source_field") != source_field:
         return "source_mismatch"
-    if _codes(card.get("quality")) & _CONFLICTS:
+    if _codes(card.get("quality")) & SLEEP_CONFLICTS:
         return "conflict"
     if unit == "points" and value > 100:
         return "invalid"
@@ -312,26 +297,19 @@ class _Evaluation:
 
     def garmin(self, night):
         cards, sleep = _mapping(night.get("cards")), _mapping(night.get("sleep"))
-        start, end = _instant(sleep.get("start_at")), _instant(sleep.get("end_at"))
-        state = "available"
-        if not start or not end:
-            state = "missing"
-        elif start >= end:
-            state = "invalid"
-        elif end - start > timedelta(hours=24):
-            state = "too_long"
-        else:
+        state, bounds = sleep_window(sleep, self.now)
+        if bounds:
+            start, end = bounds
             self.window = {
                 "start": _iso(start),
                 "end": _iso(end),
                 "duration_seconds": (end - start).total_seconds(),
             }
-            if end > self.now or self.day > self.now.astimezone(ZoneInfo("Asia/Shanghai")).date():
+            if (
+                state == "available"
+                and self.day > self.now.astimezone(ZoneInfo("Asia/Shanghai")).date()
+            ):
                 state = "not_closed"
-        if any(sleep.get(key) is True for key in ("in_progress", "ongoing", "is_sleeping")):
-            state = "not_closed"
-        if sleep.get("core_conflict") is True or _codes(sleep.get("quality")) & _CONFLICTS:
-            state = "conflict"
         if night.get("date") != self.day.isoformat() and night:
             state = "date_mismatch"
         if night.get("garmin_sleep_available") is False:
@@ -431,7 +409,10 @@ class _Evaluation:
     def environment(self, environment):
         if self.window is None:
             return None
-        start, end = _us(_instant(self.window["start"])), _us(_instant(self.window["end"]))
+        start, end = (
+            _us(utc_instant(self.window["start"])),
+            _us(utc_instant(self.window["end"])),
+        )
         rows, identities = [], {}
         duplicate_conflict = False
         selected = environment.get("selected_source")
@@ -441,7 +422,7 @@ class _Evaluation:
                 continue
             if isinstance(selected, str) and row.get("source_ref") != selected:
                 continue
-            left, right = _instant(row.get("utc_start")), _instant(row.get("utc_end"))
+            left, right = utc_instant(row.get("utc_start")), utc_instant(row.get("utc_end"))
             if not left or not right or left >= right:
                 continue  # A record without a date cannot be attributed to this night.
             left, right = _us(left), _us(right)

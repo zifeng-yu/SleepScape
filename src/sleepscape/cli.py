@@ -85,6 +85,7 @@ def main() -> None:
     readiness.add_argument("--date", type=date.fromisoformat, help="睡眠归属日，默认配置的N日窗口")
     readiness.add_argument("--read-only", action="store_true", help="只计算，不保存检查记录或迁移")
     commands.add_parser("sleep-analysis-prepare", help="验证备份后显式建立报告表，不调用模型")
+    commands.add_parser("sleep-review-prepare", help="验证备份后显式建立七日复盘表，不调用模型")
     analysis = commands.add_parser("sleep-analyze", help="按资格与预算生成尚未发布的睡眠报告")
     analysis.add_argument("--date", type=date.fromisoformat, help="睡眠归属日，必须在配置N日内")
     analysis.add_argument(
@@ -192,6 +193,19 @@ def main() -> None:
         emit(result)
         if result["status"] != "completed":
             raise SystemExit(1)
+        return
+
+    if args.command == "sleep-review-prepare":
+        from sleepscape.services.weekly_review import prepare_review
+        from sleepscape.storage.reader import StorageReadError
+        from sleepscape.storage.usage import CapacityError
+        from sleepscape.storage.weekly_review import ReviewStorageError
+
+        try:
+            emit(prepare_review(settings))
+        except (ReviewStorageError, StorageReadError, BackupError, CapacityError) as exc:
+            emit({"status": "failed", "code": getattr(exc, "code", str(exc))})
+            raise SystemExit(1) from None
         return
 
     if args.command in {"sleep-analysis-prepare", "sleep-analyze"}:

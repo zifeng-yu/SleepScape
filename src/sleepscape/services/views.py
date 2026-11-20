@@ -11,12 +11,14 @@ from sleepscape.domain.analysis_readiness import POLICY_VERSION
 from sleepscape.domain.dashboard_dates import require_visible_night, visible_start
 from sleepscape.domain.downsample import minmax_downsample
 from sleepscape.domain.metrics import metric_definition
+from sleepscape.domain.sleep_review import review_summary, sleep_offsets
 from sleepscape.domain.training_load import load_comparison
 from sleepscape.services.daily import daily_status
 from sleepscape.services.environment_dashboard import environment_status, environment_timeline
 from sleepscape.services.maintenance import maintenance_status
 from sleepscape.services.model_health import model_status
 from sleepscape.storage.analysis import AnalysisStorageError, read_bulk
+from sleepscape.storage.morning_feeling import read_range as read_feeling_range
 from sleepscape.storage.reader import SUCCESS, DashboardReader, validate_dates, validate_window
 from sleepscape.storage.reports import read_private_json
 from sleepscape.storage.sleep_analysis import SleepAnalysisStorageError, read_report_summaries
@@ -200,6 +202,9 @@ class _Context:
 
     def stale(self, resource, day):
         return self.latest.get((resource, day), {}).get("status") in {"failed", "invalid"}
+
+    def sleep(self, day):
+        return self.select(day.isoformat(), "sleep", ("sleep", "sleep_summaries"))
 
     def metric(self, row, field, unit, day):
         resource = row["resource"] if row else None
@@ -399,7 +404,7 @@ class DashboardService:
 
     def _night(self, context, day):
         value = day.isoformat()
-        sleep = context.select(value, "sleep", ("sleep", "sleep_summaries"))
+        sleep = context.sleep(day)
         hrv = context.select(value, "hrv_daily", ("hrv", "hrv_summaries"))
         previous = (day - timedelta(days=1)).isoformat()
         daily = context.select(previous, "daily_summary", ("daily_summaries",))
@@ -483,18 +488,26 @@ class DashboardService:
             "quality": sorted(set(quality)),
         }
 
-    def readiness_night(self, reader: DashboardReader, day: date) -> dict:
-        """Use the caller's coherent snapshot and existing Garmin metric rules."""
-        context = _Context(
-            reader, day - timedelta(days=31), day, self._now().astimezone(self.zone).date()
+    def readiness_context(self, reader, first, last):
+        return _Context(
+            reader, first - timedelta(days=31), last, self._now().astimezone(self.zone).date()
         )
+
+    def readiness_night(
+        self, reader: DashboardReader, day: date, *, context=None, optional=True
+    ) -> dict:
+        """Use the caller's coherent snapshot and existing Garmin metric rules."""
+        if context is None:
+            context = self.readiness_context(reader, day, day)
         night = self._night(context, day)
-        sleep = context.select(day.isoformat(), "sleep", ("sleep", "sleep_summaries"))
+        sleep = context.sleep(day)
         data = sleep["data"] if sleep else {}
         night["sleep"]["source_date"] = sleep["date"] if sleep else None
         night["sleep"]["quality"] = _quality(sleep)
         # Only an actual normalized source marker may signal ongoing sleep.
         night["sleep"]["in_progress"] = data.get("in_progress")
+        if not optional:
+            return night
         previous = (day - timedelta(days=1)).isoformat()
         activity_attempt = context.success.get(("activities", previous), {})
         availability = {
@@ -562,7 +575,15 @@ class DashboardService:
                 result["environment_only"] = False
             return {**self._header(reader), **result}
 
-    def nights(self, start: date, end: date, cursor: date | None = None, limit: int = 31) -> dict:
+    def nights(
+        self,
+        start: date,
+        end: date,
+        cursor: date | None = None,
+        limit: int = 31,
+        *,
+        include_review: bool = False,
+    ) -> dict:
         validate_dates(start, end, 92)
         if isinstance(limit, bool) or not 1 <= limit <= 92:
             raise ValueError("invalid_limit")
@@ -578,12 +599,14 @@ class DashboardService:
                     "items": [],
                     "next_cursor": None,
                     "available_dates": [],
+                    **({"review": None} if include_review else {}),
                 }
+            now = self._now()
             context = _Context(
                 reader,
-                min(days) - timedelta(days=31),
+                days[-1] - timedelta(days=31),
                 last,
-                self._now().astimezone(self.zone).date(),
+                now.astimezone(self.zone).date(),
             )
             try:
                 checked = read_bulk(
@@ -660,13 +683,32 @@ class DashboardService:
                         },
                     }
                 )
-            next_day = min(days) - timedelta(days=1)
+            next_day = days[-1] - timedelta(days=1)
+            review = {}
+            if include_review:
+                review["review"] = self._history_review(reader, context, days, items, now)
             return {
                 **self._header(reader),
                 "items": items,
                 "next_cursor": next_day.isoformat() if next_day >= start else None,
                 "available_dates": reader.available_dates(start, end),
+                **review,
             }
+
+    def _history_review(self, reader, context, days, items, now):
+        feeling_state, feelings = read_feeling_range(reader.connection, days[-1], days[0])
+        offsets = []
+        for day, item in zip(days, items, strict=True):
+            item["morning_feeling"] = feelings.get(item["date"])
+            sleep = context.sleep(day)
+            if sleep is None or context.stale(sleep["resource"], sleep["date"]):
+                continue
+            window = sleep_offsets(
+                day, {**sleep["data"], "quality": _quality(sleep)}, now=now, zone=self.zone
+            )
+            if window is not None:
+                offsets.append(window)
+        return review_summary(items, offsets, feeling_state)
 
     def timeline(
         self,

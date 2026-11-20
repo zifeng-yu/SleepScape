@@ -574,10 +574,15 @@ function analysisSummary(summary, time) {
     return known(EXECUTION, data.state, "暂无分析状态");
 }
 
+function readinessGapLabel(item) {
+    return `${known(METRICS, item?.metric, "核验项")} · ${known(GAP_CODE, item?.code, "数据未通过")}`;
+}
+
 export {
     analysisPanel,
     renderAnalysis,
     renderAnalysisUnavailable,
     modelStatusPanel,
     analysisSummary,
+    readinessGapLabel,
 };

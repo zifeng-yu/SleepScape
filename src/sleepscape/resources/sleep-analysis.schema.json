@@ -154,6 +154,10 @@
           ]
         },
         "facts": {"type": "array", "minItems": 9, "maxItems": 128, "items": {"$ref": "#/$defs/fact"}},
+        "morning_feeling": {
+          "type": "object", "additionalProperties": false, "required": ["id", "value"],
+          "properties": {"id": {"const": "F000"}, "value": {"enum": ["poor", "fair", "good"]}}
+        },
         "timeline": {"type": "array", "maxItems": 96, "items": {"$ref": "#/$defs/timelineBin"}},
         "events": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/event"}},
         "event_status": {"enum": ["available", "none_detected", "unavailable", "context_truncated"]},

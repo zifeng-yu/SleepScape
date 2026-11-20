@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from sleepscape.domain.morning_feeling import Feeling
-from sleepscape.storage.reader import DashboardReader
+from sleepscape.storage.reader import DashboardReader, validate_dates
 from sleepscape.storage.usage import require_capacity
 
 VALUES = ", ".join(f"'{value}'" for value in Feeling)
@@ -71,6 +71,25 @@ def read(directory, day):
         if reader.connection is None:
             raise ValueError("morning_feeling_not_prepared")
         return _record(reader.connection, day)
+
+
+def read_range(connection, start, end):
+    """Read only the ratings needed by a caller's existing snapshot."""
+    validate_dates(start, end, 92)
+    try:
+        if connection is None or not available(connection):
+            return "not_prepared", {}
+        ratings = {}
+        for day, value in connection.execute(
+            "SELECT night_date, feeling FROM morning_feeling WHERE night_date BETWEEN ? AND ?",
+            (start.isoformat(), end.isoformat()),
+        ):
+            if date.fromisoformat(day).isoformat() != day:
+                return "unavailable", {}
+            ratings[day] = Feeling(value)
+        return "available", ratings
+    except (sqlite3.Error, TypeError, ValueError):
+        return "unavailable", {}
 
 
 def save(directory, day, feeling):

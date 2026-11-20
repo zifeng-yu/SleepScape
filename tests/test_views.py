@@ -1,13 +1,19 @@
 """Synthetic acceptance of dashboard semantics and browser field allowlists."""
 
 import json
+import sqlite3
+from contextlib import closing
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from sleepscape.config import Settings
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
+from sleepscape.domain.morning_feeling import Feeling
+from sleepscape.domain.sleep_review import sleep_offsets
 from sleepscape.services.views import DashboardService
+from sleepscape.storage import morning_feeling
 from sleepscape.storage.repository import Repository
 
 DAY = date(2026, 2, 1)
@@ -509,6 +515,155 @@ def test_history_pagination_keeps_missing_dates_and_public_data_has_no_private_f
         assert str(service.settings.data_dir) not in text
         assert '"raw"' not in text and '"activity_id"' not in text
         assert '"request_key"' not in text and '"snapshot_id"' not in text
+
+
+def test_review_uses_visible_page_latest_feeling_and_independent_metric_counts(service):
+    first, second, rated_only = date(2026, 1, 31), DAY, date(2026, 2, 2)
+    service.settings.dashboard_start_date = first
+    service._now = lambda: datetime(2026, 2, 3, 2, tzinfo=UTC)
+    with Repository(service.settings.data_dir) as repository:
+        run = repository.start_run({"end_date": rated_only.isoformat()})
+        save(
+            repository,
+            run,
+            "sleep_summaries",
+            [
+                sleep_row(
+                    first.isoformat(),
+                    start_at="2026-01-30T15:50:00Z",
+                    end_at="2026-01-30T23:10:00Z",
+                    sleep_seconds=25000,
+                    average_heart_rate=None,
+                    quality={"average_heart_rate": "invalid_number"},
+                ),
+                sleep_row(second.isoformat(), sleep_seconds=1),
+            ],
+            first.isoformat(),
+            second.isoformat(),
+        )
+        save(
+            repository,
+            run,
+            "sleep",
+            [
+                sleep_row(
+                    start_at="2026-01-31T16:10:00Z",
+                    end_at="2026-01-31T23:30:00Z",
+                    sleep_seconds=26000,
+                    average_heart_rate=60,
+                )
+            ],
+            second.isoformat(),
+        )
+        save(
+            repository,
+            run,
+            "hrv",
+            [row("hrv_daily", first.isoformat(), {"night_average_ms": 54})],
+            first.isoformat(),
+        )
+        repository.finish_run(run, "completed", {})
+    directory = service.settings.data_dir
+    morning_feeling.migrate(directory)
+    morning_feeling.save(directory, first - timedelta(days=1), Feeling.POOR)
+    morning_feeling.save(directory, first, Feeling.FAIR)
+    morning_feeling.save(directory, rated_only, Feeling.GOOD)
+    morning_feeling.save(directory, rated_only, Feeling.POOR)
+
+    page = service.nights(first - timedelta(days=5), rated_only, include_review=True)
+    assert [item["morning_feeling"] for item in page["items"]] == ["poor", None, "fair"]
+    assert page["available_dates"] == [second.isoformat(), first.isoformat()]
+    assert page["items"][0]["sleep_seconds"]["state"] == "missing"
+    assert page["review"] == {
+        "start_date": first.isoformat(),
+        "end_date": rated_only.isoformat(),
+        "night_count": 3,
+        "feeling_state": "available",
+        "feeling_counts": {"poor": 1, "fair": 1, "good": 0, "unfilled": 1},
+        "medians": {
+            "sleep_seconds": {"value": 25500, "valid_n": 2},
+            "average_heart_rate": {"value": 60, "valid_n": 1},
+            "night_average_hrv": {"value": 54, "valid_n": 1},
+            "sleep_start_offset_seconds": {"value": 0, "valid_n": 2},
+            "sleep_end_offset_seconds": {"value": 26400, "valid_n": 2},
+        },
+    }
+    assert "filled_at" not in json.dumps(page) and PRIVATE not in json.dumps(page)
+    first_page = service.nights(first, rated_only, limit=2, include_review=True)
+    assert first_page["next_cursor"] == first.isoformat()
+    assert first_page["review"]["start_date"] == second.isoformat()
+    assert first_page["review"]["night_count"] == 2
+    next_page = service.nights(first, rated_only, cursor=first, limit=2, include_review=True)
+    assert next_page["review"]["end_date"] == first.isoformat()
+    assert next_page["review"]["feeling_counts"]["fair"] == 1
+    hidden_day = first - timedelta(days=1)
+    assert service.nights(hidden_day, hidden_day, include_review=True)["review"] is None
+    default_page = service.nights(first, rated_only)
+    assert "review" not in default_page
+    assert all("morning_feeling" not in item for item in default_page["items"])
+
+
+def test_review_degrades_rating_reads_and_excludes_stale_source(service):
+    empty = service.nights(DAY, DAY, include_review=True)["review"]
+    assert empty["feeling_state"] == "not_prepared" and empty["feeling_counts"] is None
+    assert not service.settings.data_dir.exists()
+    seed(service)
+    old_database = service.settings.data_dir / "sleepscape.sqlite3"
+    old_bytes = old_database.read_bytes()
+    old_files = set(old_database.parent.iterdir())
+    snapshot = service.nights(DAY, DAY, include_review=True)["review"]
+    assert snapshot["feeling_state"] == "not_prepared"
+    assert snapshot["medians"]["sleep_seconds"] == {"value": 28000, "valid_n": 1}
+    assert old_database.read_bytes() == old_bytes
+    # SQLite may open journal coordination files even for a read-only WAL reader.
+    wal = old_database.with_name(old_database.name + "-wal")
+    shm = old_database.with_name(old_database.name + "-shm")
+    assert set(old_database.parent.iterdir()) - {wal, shm} == old_files - {wal, shm}
+    assert not wal.exists() or wal.stat().st_size == 0
+
+    with closing(sqlite3.connect(old_database)) as connection, connection:
+        connection.execute("CREATE TABLE morning_feeling (unexpected TEXT)")
+    with Repository(service.settings.data_dir) as repository:
+        run = repository.start_run({})
+        request = DataRequest(
+            "sleep",
+            f"{DAY}:{DAY}",
+            "/synthetic",
+            start_date=DAY.isoformat(),
+            end_date=DAY.isoformat(),
+        )
+        repository.record_failure(run, request, "network_retry_exhausted")
+        repository.finish_run(run, "partial", {})
+    page = service.nights(DAY, DAY, include_review=True)
+    assert page["items"][0]["sleep_seconds"]["state"] == "stale"
+    assert page["items"][0]["sleep_seconds"]["value"] == 28000
+    assert page["review"]["feeling_state"] == "unavailable"
+    assert page["review"]["feeling_counts"] is None
+    assert page["review"]["medians"]["sleep_seconds"] == {"value": None, "valid_n": 0}
+    assert page["review"]["medians"]["sleep_start_offset_seconds"] == {"value": None, "valid_n": 0}
+    assert page["review"]["medians"]["night_average_hrv"] == {"value": 40, "valid_n": 1}
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"start_at": "2026-02-01T11:00:00"},
+        {"start_at": "2026-02-01T15:00:00Z"},
+        {"end_at": "2026-02-01T05:00:00Z"},
+        {"end_at": "2026-02-01T07:00:00Z"},
+        {"start_at": "2026-01-31T12:00:00Z"},
+        {"end_at": "2026-02-02T00:00:00Z"},
+        {"in_progress": True},
+        {"quality": ["conflicting_duplicate_record"]},
+    ],
+)
+def test_review_uses_configured_local_clock_and_only_valid_windows(changes):
+    zone = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 2, 1, 21, tzinfo=UTC)
+    day = date(2026, 2, 1)
+    sleep = {"start_at": "2026-02-01T06:30:00Z", "end_at": "2026-02-01T14:00:00Z"}
+    assert sleep_offsets(day, sleep, now=now, zone=zone) == (-5400, 21600)
+    assert sleep_offsets(day, {**sleep, **changes}, now=now, zone=zone) is None
 
 
 def test_status_reports_36h_freshness_and_only_safe_collection_fields(service):

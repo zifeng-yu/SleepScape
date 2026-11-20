@@ -1,6 +1,8 @@
 import { api } from "./api.js";
 import { add, button, el } from "./dom.js";
 
+export const FEELING_LABELS = new Map([["poor", "较差"], ["fair", "一般"], ["good", "较好"]]);
+
 // Revisiting a date waits for its outstanding write before reading the saved value.
 const pendingWrites = new Map();
 
@@ -42,7 +44,7 @@ export function morningFeeling(day, signal) {
         }
     }
     group.append(el("span", "", "晨起睡感"));
-    for (const [value, label] of [["poor", "较差"], ["fair", "一般"], ["good", "较好"]]) {
+    for (const [value, label] of FEELING_LABELS) {
         const control = button(label, () => save(value), "feeling-choice");
         choices.set(value, control);
         group.append(control);

@@ -1,5 +1,7 @@
 /* Page state and view coordination. Health data remains in memory only. */
-import { morningFeeling } from "./morning-feeling.js";
+import { FEELING_LABELS, morningFeeling } from "./morning-feeling.js";
+import { feelingUnavailable, historyReview } from "./history-review.js";
+import { weeklyReportPanel } from "./weekly-report.js";
 import { api, errorText } from "./api.js";
 import { $, el, add, button, icon, chip } from "./dom.js";
 import {
@@ -31,6 +33,8 @@ import {
 } from "./analysis.js";
 
 const content = $("#page-content");
+const FIRST_WAKE_DATE = "2000-01-01";
+const LAST_WAKE_DATE = "2100-12-31";
 const state = {
     view: "night",
     date: null,
@@ -45,6 +49,7 @@ const state = {
     timeline: null,
     chart: null,
     historyDays: 7,
+    historyFeeling: "all",
     sort: "date",
     sortDirection: -1,
     mode: "night",
@@ -63,6 +68,11 @@ function dashboardStartDate() {
 function visibleDate(date) {
     const start = dashboardStartDate();
     return start && validDate(date) && date < start ? start : date;
+}
+
+function historyDate(date) {
+    const bounded = date < FIRST_WAKE_DATE ? FIRST_WAKE_DATE : date > LAST_WAKE_DATE ? LAST_WAKE_DATE : date;
+    return visibleDate(bounded);
 }
 
 function readURL() {
@@ -197,7 +207,7 @@ async function loadView(refreshStatus = false) {
             state.date = validDate(state.status.latest_night)
                 ? state.status.latest_night
                 : time.localInput(Date.now()).slice(0, 10);
-        state.date = visibleDate(state.date);
+        state.date = state.view === "history" ? historyDate(state.date) : visibleDate(state.date);
         writeURL(true);
         $("#sync-label").textContent = state.status.latest_success_at
             ? `采集于 ${time.dateTime(state.status.latest_success_at)}`
@@ -935,14 +945,18 @@ function focusEvent(event) {
 }
 
 async function loadHistory(generation) {
-    const start = visibleDate(shiftDate(state.date, -(state.historyDays - 1)));
-    const params = new URLSearchParams({ start, end: state.date, limit: "31" });
+    const start = historyDate(shiftDate(state.date, -(state.historyDays - 1)));
+    const params = new URLSearchParams({
+        start, end: state.date, limit: "31", include_review: "true",
+    });
     const result = await api(`nights?${params}`, state.abort.signal);
     if (generation !== state.generation) return;
-    renderHistory((result.items || []).filter((item) =>
-        !dashboardStartDate() || item.date >= dashboardStartDate()), start);
+    const items = (result.items || []).filter(
+        (item) => !dashboardStartDate() || item.date >= dashboardStartDate(),
+    );
+    renderHistory(items, result.review, start, !result.next_cursor);
 }
-function renderHistory(items, start) {
+function renderHistory(items, review, start, completePage) {
     const controls = el("div", "history-controls"),
         segmented = el("div", "segmented");
     for (const days of [7, 30]) {
@@ -954,19 +968,78 @@ function renderHistory(items, start) {
         b.setAttribute("aria-pressed", String(state.historyDays === days));
         segmented.append(b);
     }
+    const cutoff = el("input");
+    cutoff.type = "date";
+    cutoff.min = historyDate(FIRST_WAKE_DATE);
+    cutoff.max = LAST_WAKE_DATE;
+    cutoff.value = state.date;
+    cutoff.addEventListener("change", () => {
+        if (validDate(cutoff.value)) navigate("history", historyDate(cutoff.value));
+    });
     add(
         controls,
         segmented,
-        el("span", "history-period", `${start} — ${state.date} · 按醒来日期`),
+        add(el("label", "history-field"), el("span", "", "截止醒来日期"), cutoff),
+        el("span", "history-period", `${review?.start_date || start} — ${review?.end_date || state.date} · ${items.length} 个日历日`),
     );
-    const card = el("section", "card"),
-        head = add(
-            el("div", "table-heading"),
-            el("h2", "", "每日观测"),
-            el("small", "", `${items.length}个日历日 · 点击日期查看详情`),
+    const readable = review?.feeling_state === "available";
+    const filter = el("select");
+    for (const [key, label] of [["all", "全部"], ...FEELING_LABELS, ["unfilled", "未填写"]]) {
+        const option = el("option", "", label);
+        option.value = key;
+        filter.append(option);
+    }
+    filter.disabled = !readable;
+    filter.value = readable ? state.historyFeeling : "all";
+    const count = el("small");
+    count.setAttribute("role", "status");
+    const rows = el("div");
+    const card = add(
+        el("section", "card"),
+        add(el("div", "table-heading"), el("h2", "", "每日观测"), count),
+        add(
+            el("div", "history-filters"),
+            add(el("label", "history-field"), el("span", "", "按晨起睡感筛选"), filter),
         ),
-        scroll = el("div", "table-scroll"),
-        table = el("table", "history-table");
+        rows,
+    );
+    function redraw(sortKey) {
+        const selected = readable ? state.historyFeeling : "all";
+        const matches = selected === "all" ? items : items.filter(
+            (item) => (item.morning_feeling ?? "unfilled") === selected,
+        );
+        const message = readable || !items.length ? "" : ` · ${feelingUnavailable(review?.feeling_state)}`;
+        count.textContent = `显示 ${matches.length} / ${items.length} 个日历日${message}`;
+        const scrollLeft = rows.firstElementChild?.scrollLeft || 0;
+        if (matches.length) {
+            const table = renderHistoryTable(matches, readable, redraw);
+            rows.replaceChildren(table);
+            table.scrollLeft = scrollLeft;
+            if (sortKey) table.querySelector(`[data-sort="${sortKey}"]`)?.focus();
+        } else {
+            rows.replaceChildren(items.length
+                ? empty("没有匹配的夜晚", "可将晨起睡感筛选切回「全部」。")
+                : empty("暂时没有历史记录", "请选择另一个截止日期。"));
+        }
+    }
+    filter.addEventListener("change", () => {
+        state.historyFeeling = filter.value;
+        redraw();
+    });
+    redraw();
+    const overview = completePage && state.historyDays === 7 && review?.night_count > 0
+        && review.night_count === items.length && review.start_date === (items.at(-1)?.date)
+        && review.end_date === state.date;
+    content.replaceChildren(
+        controls,
+        ...(overview ? [historyReview(review), weeklyReportPanel(review, state.abort.signal, time)] : []),
+        card,
+    );
+}
+
+function renderHistoryTable(items, readable, redraw) {
+    const scroll = el("div", "table-scroll");
+    const table = el("table", "history-table");
     const columns = [
         ["date", "醒来日期"],
         ["sleep_seconds", "主睡眠"],
@@ -996,12 +1069,18 @@ function renderHistory(items, start) {
                     state.sort = key;
                     state.sortDirection = -1;
                 }
-                renderHistory(items, start);
+                redraw(key);
             });
+            sortButton.dataset.sort = key;
             sortButton.setAttribute("aria-label", label);
             th.append(sortButton);
         } else th.textContent = label;
         tr.append(th);
+        if (key === "date") {
+            const feelingHeader = el("th", "", "晨起睡感");
+            feelingHeader.scope = "col";
+            tr.append(feelingHeader);
+        }
     }
     const analysisHeader = el("th", "", "完整性检查");
     analysisHeader.scope = "col";
@@ -1029,7 +1108,8 @@ function renderHistory(items, start) {
             navigate("night", item.date);
         });
         dateCell.append(link);
-        row.append(dateCell);
+        const feeling = readable ? FEELING_LABELS.get(item.morning_feeling) || "未填写" : "—";
+        row.append(dateCell, el("td", "history-feeling", feeling));
         for (const [key] of columns.slice(1, -1)) {
             const metric = item[key] || {};
             let value = "—";
@@ -1077,14 +1157,7 @@ function renderHistory(items, start) {
     }
     add(table, thead, tbody);
     scroll.append(table);
-    add(
-        card,
-        head,
-        items.length
-            ? scroll
-            : empty("暂时没有历史记录", "成功采集后，记录会按日期显示在这里。"),
-    );
-    content.replaceChildren(controls, card);
+    return scroll;
 }
 function statusItem(label, value, detail, stateCode) {
     const node = el("div", "status-item"),

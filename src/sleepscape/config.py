@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     demo: bool = False
     llm_enabled: bool = False
     llm_automatic_enabled: bool = False
+    llm_review_enabled: bool = False
     llm_model_ref: str = "sleep_analyst"
     llm_base_url: str | None = Field(default=None, repr=False)
     llm_endpoint: str | None = Field(default=None, repr=False)

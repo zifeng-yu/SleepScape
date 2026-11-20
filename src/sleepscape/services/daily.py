@@ -1,6 +1,7 @@
 """Collect first, then check facts and run independently budgeted report generation."""
 
 import sqlite3
+import time
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 
@@ -257,6 +258,7 @@ def _new_row(period, plan, now, attempt):
 
 def run_daily(settings, *, now=None, retry=False, gateway=None):
     """Collect first, then persist local readiness after releasing the collection mutex."""
+    deadline = time.monotonic() + 7200
     result = _run_daily(settings, now=now, retry=retry, gateway=gateway)
     if result["action"] not in {"executed", "skipped_existing", "retry_not_allowed"}:
         result["readiness"] = {"status": "skipped", "code": "collection_not_finished"}
@@ -287,4 +289,10 @@ def run_daily(settings, *, now=None, retry=False, gateway=None):
     except Exception:
         result["reports"] = {"status": "failed", "code": "sleep_analysis_state_unavailable"}
     result["analysis"] = result["reports"]["status"]
+    if settings.llm_review_enabled and result["run"] is not None:
+        from sleepscape.services.weekly_review import run_review
+
+        result["review"] = run_review(
+            settings, date.fromisoformat(result["run"]["day"]), now=now, deadline=deadline
+        )
     return result

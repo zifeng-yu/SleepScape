@@ -1057,6 +1057,85 @@ main {
     color: var(--muted);
     font-size: 12px;
 }
+.history-field {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    font-size: 13px;
+    color: var(--muted);
+}
+.history-field input,
+.history-field select {
+    min-height: 38px;
+    max-width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 9px;
+    background: #fff;
+    color: var(--ink);
+}
+.history-field select:disabled {
+    color: var(--muted);
+    background: #f5f8fa;
+}
+.history-review {
+    padding: clamp(14px, 3vw, 24px);
+    margin-bottom: 16px;
+}
+.history-review-title {
+    margin: 0;
+}
+.history-review-ratings {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin: 15px 0;
+}
+.history-review-ratings h3,
+.history-review-note {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+}
+.history-rating-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+.history-review-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 108px), 1fr));
+    gap: 8px;
+    margin: 0;
+}
+.history-review-metric {
+    min-width: 0;
+    border-radius: 10px;
+    padding: 11px 9px;
+    background: #f5f8fa;
+}
+.history-review-metric dt,
+.history-review-metric dd span {
+    color: var(--muted);
+    font-size: 12px;
+}
+.history-review-metric dd {
+    display: grid;
+    gap: 3px;
+    margin: 4px 0 0;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+.history-filters {
+    padding: 0 clamp(14px, 3vw, 24px) 12px;
+}
 .table-scroll {
     overflow-x: auto;
 }
@@ -1126,6 +1205,8 @@ main {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
 }
 .table-heading small {
     color: #647684;
@@ -2033,3 +2114,48 @@ main {
     color: white;
 }
 .feeling-status { color: var(--muted); }
+
+.weekly-report > summary {
+    cursor: pointer;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.weekly-report-body {
+    margin-top: 12px;
+    overflow-wrap: anywhere;
+}
+
+.weekly-statement {
+    margin-top: 14px;
+    border-top: 1px solid var(--line);
+    padding-top: 8px;
+}
+
+.weekly-statement h3,
+.weekly-statement p,
+.weekly-evidence p {
+    margin: 0 0 6px;
+}
+
+.weekly-evidence {
+    margin: 5px 0;
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: #f5f8fa;
+}
+
+.weekly-evidence > summary {
+    cursor: pointer;
+}
+
+.weekly-report {
+    padding: clamp(14px, 3vw, 24px);
+    margin-bottom: 16px;
+}
+
+.weekly-report-note {
+    margin: 0 0 6px;
+    font-size: 13px;
+    color: var(--muted);
+}

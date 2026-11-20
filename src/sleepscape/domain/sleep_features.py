@@ -13,8 +13,10 @@ from sleepscape.domain.analysis_readiness import (
     _usable_channel,
     evaluate_readiness,
 )
+from sleepscape.domain.morning_feeling import Feeling
 
 MAX_INPUT_BYTES = 24 * 1024
+MORNING_FEELING_EVIDENCE_ID = "F000"
 CHANNELS = ("temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative")
 CORE_METRICS = (
     "sleep.total_minutes",
@@ -192,7 +194,7 @@ def _fact(metric, value, valid_n=None, expected_n=None):
     }
 
 
-def _rows(environment, start, end):
+def environment_minutes(environment, start, end):
     return sorted(
         (
             r
@@ -205,7 +207,7 @@ def _rows(environment, start, end):
     )
 
 
-def _statistics(rows):
+def environment_statistics(rows):
     result = {}
     for metric in CHANNELS:
         points = []
@@ -366,7 +368,7 @@ def _timeline(day, night, environment, start, end, cutoff):
     left = start
     while left < end:
         right = min(left + timedelta(minutes=15), end)
-        rows = _rows(environment, left, right)
+        rows = environment_minutes(environment, left, right)
         if not rows:
             left = right
             continue
@@ -378,7 +380,7 @@ def _timeline(day, night, environment, start, end, cutoff):
         ]
         if not summary or not summary["count_exact"]:
             return []
-        values = _statistics(rows)
+        values = environment_statistics(rows)
         bins.append(
             {
                 "id": f"T{len(bins) + 1:03}",
@@ -397,12 +399,27 @@ def _timeline(day, night, environment, start, end, cutoff):
 
 
 def build_sleep_input(
-    day, night, environment, readiness, *, baseline_nights=(), data_cutoff_at, synthetic=False
+    day,
+    night,
+    environment,
+    readiness,
+    *,
+    baseline_nights=(),
+    data_cutoff_at,
+    synthetic=False,
+    morning_feeling=None,
 ):
     """Construct a bounded anonymous snapshot; neither source values nor the gate are changed."""
     try:
         return _build(
-            day, night, environment, readiness, baseline_nights, data_cutoff_at, synthetic
+            day,
+            night,
+            environment,
+            readiness,
+            baseline_nights,
+            data_cutoff_at,
+            synthetic,
+            morning_feeling,
         )
     except SleepAnalysisError:
         raise
@@ -410,7 +427,7 @@ def build_sleep_input(
         raise SleepAnalysisError("invalid_analysis_input") from None
 
 
-def _build(day, night, environment, readiness, baseline_nights, cutoff, synthetic):
+def _build(day, night, environment, readiness, baseline_nights, cutoff, synthetic, morning_feeling):
     _assert(type(day) is date and type(synthetic) is bool)
     cutoff = _instant(cutoff)
     if readiness.get("data_state") != "ready" or readiness.get("core_ready") is not True:
@@ -427,8 +444,8 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
         _assert(actual[key] == readiness[key])
     _assert(actual["core_ready"] and actual["night_date"] == day.isoformat())
     start, end = _instant(actual["window"]["start"]), _instant(actual["window"]["end"])
-    rows = _rows(environment, start, end)
-    stats = _statistics(rows)
+    rows = environment_minutes(environment, start, end)
+    stats = environment_statistics(rows)
     summary = actual["environment_summary"]
     channels = summary["channels"]
     facts = []
@@ -547,6 +564,11 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
         "event_status": event_status,
         "required_limitations": sorted(limitations),
     }
+    if morning_feeling is not None:
+        payload["morning_feeling"] = {
+            "id": MORNING_FEELING_EVIDENCE_ID,
+            "value": Feeling(morning_feeling).value,
+        }
     if len(canonical_json(payload).encode()) > MAX_INPUT_BYTES:
         payload["timeline"] = []
         limitations.add("timeline_omitted_for_budget")
@@ -710,6 +732,14 @@ def _validate_input(p):
             and 0 < row["active_seconds"] <= (right - left).total_seconds()
         )
         ids.append(row["id"])
+    if "morning_feeling" in p:
+        feeling = p["morning_feeling"]
+        _assert(
+            set(feeling) == {"id", "value"}
+            and feeling["id"] == MORNING_FEELING_EVIDENCE_ID
+            and feeling["value"] in tuple(Feeling)
+        )
+        ids.append(feeling["id"])
     _assert(len(ids) == len(set(ids)))
     for row in c["warnings"]:
         _assert(start <= _instant(row["window_start"]) < _instant(row["window_end"]) <= end)
@@ -725,7 +755,7 @@ def _validate_input(p):
     _assert(p["event_status"] != "unavailable" or "event_detection_incomplete" in limits)
 
 
-def _safe_text(text):
+def report_text_is_safe(text):
     # Measurements live in immutable evidence cards; generated prose does not do arithmetic.
     if re.search(
         r"(?<!SpO)\d|https?://|www\.|<[^>]*>|sk-|GCDC_|忽略.{0,12}(指令|规则)|system\s*:",
@@ -816,6 +846,8 @@ def _validate_output(p, source):
         _assert(not p["observations"] and not p["hypotheses"] and not p["actions"])
         raise SleepAnalysisError("model_insufficient_input")
     evidence = {r["id"]: r for group in ("facts", "timeline", "events") for r in source[group]}
+    if feeling := source.get("morning_feeling"):
+        evidence[feeling["id"]] = feeling
     _assert(
         {r["category"] for r in p["observations"]}
         == {"sleep", "body_signals", "previous_day", "environment"}
@@ -827,7 +859,7 @@ def _validate_output(p, source):
         texts = [claim["text"], *claim.get("alternatives", [])] + (
             [claim["observe"]] if "observe" in claim else []
         )
-        _assert(all(_safe_text(t) for t in texts))
+        _assert(all(report_text_is_safe(t) for t in texts))
     for row in p["observations"]:
         facts = [evidence[i].get("metric", "") for i in row["evidence_ids"]]
         supported = {

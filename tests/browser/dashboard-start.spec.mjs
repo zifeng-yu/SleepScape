@@ -65,6 +65,7 @@ test("seven and thirty day histories do not request or show dates before display
     await expect(page.locator(".history-date")).toHaveCount(1);
     await expect(page.locator(".history-date")).toHaveText(NIGHT);
     await expect(page.locator(".history-period")).toContainText(`${NIGHT} — ${NIGHT}`);
+    await expect(page.locator(".history-review").getByText("单晚值 · 1/1 晚")).toHaveCount(5);
     await page.getByRole("button", { name: "近30日", exact: true }).click();
     await expect(page.locator(".history-date")).toHaveCount(1);
     await expect(page.locator(".history-period")).toContainText(`${NIGHT} — ${NIGHT}`);

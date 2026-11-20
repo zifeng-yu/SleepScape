@@ -99,6 +99,11 @@ def _attempt_limit(rows, clock):
 def _public_report(row, changed, reasons):
     source = row["input"]
     payload = source["payload"]
+    evidence = {
+        key: payload[key]
+        for key in ("facts", "timeline", "events", "morning_feeling")
+        if key in payload
+    }
     return {
         "night_date": row["night_date"],
         "generated_at": row["generated_at"],
@@ -108,7 +113,7 @@ def _public_report(row, changed, reasons):
         "source_changed": changed,
         "source_changed_reasons": reasons,
         "content": {key: value for key, value in row["output"].items() if key != "input_hash"},
-        "evidence": {key: payload[key] for key in ("facts", "timeline", "events")},
+        "evidence": evidence,
         "required_limitations": payload["required_limitations"],
     }
 
@@ -134,9 +139,18 @@ def report_state(settings, day, *, readiness=None):
             changed, reasons = None, ["current_data_unavailable"]
             if readiness is not None:
                 try:
-                    current = read_snapshot(settings, day, build=False)
-                    changed = saved["input"]["source_fingerprint"] != current["source_fingerprint"]
-                    reasons = ["source_data_changed"] if changed else []
+                    includes_feeling = "morning_feeling" in saved["input"]["payload"]
+                    current = read_snapshot(
+                        settings,
+                        day,
+                        build=False,
+                        include_morning_feeling=includes_feeling,
+                    )
+                    if not includes_feeling or current["feeling_state"] == "available":
+                        changed = (
+                            saved["input"]["source_fingerprint"] != current["source_fingerprint"]
+                        )
+                        reasons = ["source_data_changed"] if changed else []
                 except Exception:
                     pass
             result.update(

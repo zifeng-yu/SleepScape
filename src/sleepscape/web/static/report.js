@@ -1,5 +1,6 @@
 /* Validated model prose is always text. Evidence values come from the saved snapshot. */
 import { add, el } from "./dom.js";
+import { FEELING_LABELS } from "./morning-feeling.js";
 
 const CATEGORY = { sleep: "本晚睡眠", body_signals: "身体信号", previous_day: "前日背景", environment: "环境观察" };
 const FACTOR = { temperature: "温度", humidity: "湿度", light: "光照", sound: "声音", training_load: "运动负荷", stress: "压力", sleep_schedule: "作息" };
@@ -24,7 +25,7 @@ const LIMITATIONS = {
     wearable_estimates: "手表数据是可穿戴设备估计，不能代替医学检测。",
     relative_sound_only: "声音为未校准的相对dBFS，不能当作标准环境分贝或识别声源。",
     no_stage_timeline: "未取得睡眠分期时间区间，不能定位深睡、浅睡或REM发生时刻。",
-    unobserved_lifestyle: "咖啡因、酒精、疾病或药物、主观睡感等生活因素未记录，保持未知。",
+    unobserved_lifestyle: "未记录的生活因素保持未知，例如咖啡因、酒精、疾病或药物。",
     clock_error_unknown: "环境时间误差未知，不能判断秒级先后或环境导致觉醒。",
     baseline_insufficient: "部分个人历史基线不足，不能据此判断偏离平时的程度。",
     sampling_gaps_present: "环境有允许范围内的采样缺口；缺采不代表安静、黑暗或正常。",
@@ -62,7 +63,10 @@ function validReport(value, day) {
         !array(evidence.facts, 128) || !array(evidence.timeline, 96) || !array(evidence.events, 8) ||
         !array(content.observations, 8) || !array(content.hypotheses, 3) || !array(content.actions, 3) ||
         !array(content.limitations, 20) || !array(report.required_limitations, 20)) return false;
-    const entries = [...evidence.facts, ...evidence.timeline, ...evidence.events];
+    const feeling = evidence.morning_feeling;
+    if (Object.hasOwn(evidence, "morning_feeling") && (object(feeling) !== feeling || feeling.id !== "F000" ||
+        !FEELING_LABELS.has(feeling.value) || Object.keys(feeling).length !== 2)) return false;
+    const entries = [...evidence.facts, ...evidence.timeline, ...evidence.events, ...(feeling ? [feeling] : [])];
     const ids = new Set(entries.map((row) => object(row).id));
     if (ids.size !== entries.length || ![...ids].every(evidenceId)) return false;
     if (!evidence.facts.every((row) => object(row) === row && /^F\d{3}$/.test(row.id) &&
@@ -114,6 +118,9 @@ function evidenceCard(row, kind, time, day) {
         if (row.valid_n !== null || row.expected_n !== null) values.push([row.period === "baseline30" ? row.metric === "baseline.training_load" ? "有效完整日／预期日" : "有效夜晚／预期夜晚" : "有效数量／预期数量", `${number(row.valid_n)} / ${number(row.expected_n)}`]);
         if (row.period === "night") values.push(["睡眠归属日", day]);
         if (row.period === "previous_day") { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); values.push(["来源日", d.toISOString().slice(0, 10)]); }
+    } else if (kind === "morning_feeling") {
+        title = "晨起睡感";
+        values.push(["自填睡感", FEELING_LABELS.get(row.value)], ["睡眠归属日", day]);
     } else {
         title = kind === "timeline" ? "环境时段摘要" : "声音事件摘要";
         values.push(["时段", `${stamp(row.start_at, time)} — ${stamp(row.end_at, time)}`]);
@@ -186,11 +193,12 @@ function reportSection(data, day, time, executionLabels, errorLabels) {
         ? "报告发布后，依据数据已变化。这里保留原报告及原证据，不自动重写结论；请结合下方当前数据查看。"
         : "当前数据暂不可核对，无法确认报告依据是否变化。已发布报告和生成时证据仍保留。"));
     const content = report.content, evidence = report.evidence;
+    const feeling = evidence.morning_feeling ? [evidence.morning_feeling] : [];
     const detail = el("details", "report-evidence");
-    add(detail, el("summary", "", `生成时证据（${evidence.facts.length + evidence.timeline.length + evidence.events.length}项）`),
-        el("p", "analysis-footnote", "这些数值来自程序保存的输入快照。未知保持未知；阶段累计不代表具体分期时刻。"));
+    add(detail, el("summary", "", `生成时证据（${evidence.facts.length + evidence.timeline.length + evidence.events.length + feeling.length}项）`),
+        el("p", "analysis-footnote", "这些记录来自报告生成时的证据。阶段累计不代表具体分期时刻。"));
     const cards = el("div", "report-evidence-grid"), targets = new Map();
-    for (const [kind, rows] of [["fact", evidence.facts], ["timeline", evidence.timeline], ["event", evidence.events]]) for (const row of rows) {
+    for (const [kind, rows] of [["morning_feeling", feeling], ["fact", evidence.facts], ["timeline", evidence.timeline], ["event", evidence.events]]) for (const row of rows) {
         const card = evidenceCard(row, kind, time, day); cards.append(card); targets.set(row.id, card);
     }
     detail.append(cards);
