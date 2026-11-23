@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from sleepscape.domain.analysis_readiness import POLICY_VERSION
 from sleepscape.domain.daily import instant, window
 from sleepscape.domain.sleep_features import SleepAnalysisError
 from sleepscape.models.base import OUTPUT_SCHEMA_ERRORS, ChatMessage, ModelError, ModelRequest
@@ -150,7 +151,16 @@ def report_state(settings, day, *, readiness=None):
                         changed = (
                             saved["input"]["source_fingerprint"] != current["source_fingerprint"]
                         )
-                        reasons = ["source_data_changed"] if changed else []
+                        reasons = (
+                            [
+                                "readiness_policy_changed"
+                                if saved["input"]["payload"]["completeness"]["policy_version"]
+                                != POLICY_VERSION
+                                else "source_data_changed"
+                            ]
+                            if changed
+                            else []
+                        )
                 except Exception:
                     pass
             result.update(

@@ -62,7 +62,7 @@
       "description": "Projection of an approved readiness warning. Check timestamps, private source identities and fingerprint are deliberately not sent. Exact missing seconds within partial minutes are unknown.",
       "required": ["code", "source", "metric", "window_start", "window_end", "expected", "observed", "recoverability"],
       "properties": {
-        "code": {"enum": ["missing_environment_minutes", "invalid_channel"]},
+        "code": {"enum": ["missing_environment_minutes", "invalid_channel", "light_bus_sampling_gap"]},
         "source": {"const": "environment"},
         "metric": {"enum": ["environment.window", "temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative"]},
         "window_start": {"type": "string", "format": "date-time"},
@@ -136,7 +136,7 @@
           "type": "object", "additionalProperties": false,
           "required": ["policy_version", "policy", "quality_state", "garmin_core_complete", "environment_eligible", "environment_expected_windows", "environment_observed_windows", "time_quality", "channels", "warnings", "warning_interval_scope"],
           "properties": {
-            "policy_version": {"const": "dual-source-coverage-1"},
+            "policy_version": {"enum": ["dual-source-coverage-1", "dual-source-coverage-2"]},
             "policy": {"$ref": "#/$defs/coveragePolicy"},
             "quality_state": {"enum": ["complete", "with_gaps"]},
             "garmin_core_complete": {"const": true},

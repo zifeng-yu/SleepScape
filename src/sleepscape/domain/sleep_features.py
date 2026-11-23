@@ -8,7 +8,10 @@ import re
 from datetime import UTC, date, datetime, timedelta
 
 from sleepscape.domain.analysis_readiness import (
+    LIGHT_BUS_WARNING,
+    MAX_LIGHT_BUS_LOST_SAMPLES,
     POLICY_VERSION,
+    READABLE_COVERAGE_POLICIES,
     _card_state,
     _usable_channel,
     evaluate_readiness,
@@ -625,7 +628,7 @@ def _validate_input(p):
     date.fromisoformat(p["night_date"])
     c = p["completeness"]
     _assert(
-        c["policy_version"] == POLICY_VERSION
+        c["policy_version"] in READABLE_COVERAGE_POLICIES
         and c["policy"] == {"min_channel_coverage": 0.99, "max_affected_span_seconds": 300}
     )
     _assert(
@@ -743,6 +746,20 @@ def _validate_input(p):
     _assert(len(ids) == len(set(ids)))
     for row in c["warnings"]:
         _assert(start <= _instant(row["window_start"]) < _instant(row["window_end"]) <= end)
+        if row["code"] == LIGHT_BUS_WARNING:
+            _assert(
+                c["policy_version"] == POLICY_VERSION
+                and row["metric"] == "illuminance_lux"
+                and row["recoverability"] == "unrecoverable"
+                and type(row["expected"]) is int
+                and row["expected"] > 0
+                and row["expected"] % 60 == 0
+                and type(row["observed"]) is int
+            )
+            windows = row["expected"] // 60
+            _assert(
+                windows <= row["expected"] - row["observed"] <= MAX_LIGHT_BUS_LOST_SAMPLES * windows
+            )
     limits = set(p["required_limitations"])
     _assert(
         limits <= LIMITATIONS

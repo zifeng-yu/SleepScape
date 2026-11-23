@@ -27,7 +27,7 @@ function gap(overrides = {}) {
 function readiness(state = "waiting_data", overrides = {}) {
     const complete = state === "ready";
     const result = {
-        policy_version: "dual-source-coverage-1", night_date: NIGHT, checked_at: CHECKED,
+        policy_version: "dual-source-coverage-2", night_date: NIGHT, checked_at: CHECKED,
         policy: { min_channel_coverage: 0.99, max_affected_span_seconds: 300 },
         data_state: state, core_ready: complete, quality_state: complete ? "complete" : "insufficient",
         warnings: [],
@@ -197,6 +197,22 @@ test("minor gaps permit later analysis while exposing actual sample coverage and
     await panel.screenshot({ path: info.outputPath("synthetic-coverage-desktop.png") });
 });
 
+test("a counted light bus fault displays its sample counts and warning", async ({ page }) => {
+    const value = minorGaps();
+    Object.assign(value.readiness.warnings[0], {
+        code: "light_bus_sampling_gap", metric: "illuminance_lux",
+        expected: 60, observed: 58,
+    });
+    await mock(page, value);
+    const panel = await open(page);
+    await expect(panel.locator(".readiness-badge")).toHaveText("可分析，有数据缺口");
+    await panel.locator(".quality-details > summary").click();
+    const warnings = panel.locator("details.readiness-warnings");
+    await warnings.locator(":scope > summary").click();
+    await expect(warnings).toContainText("光照通信短暂异常，保留有效读数");
+    await expect(warnings).toContainText("60 / 58");
+});
+
 for (const reason of ["coverage", "span"]) {
     test(`${reason === "coverage" ? "coverage below minimum" : "span above maximum"} blocks analysis without hiding smaller gaps`, async ({ page }) => {
         const payload = minorGaps();
@@ -316,7 +332,7 @@ test("history labels saved check time and supports unknown or absent checks", as
         const body = await response.json();
         const states = ["ready", "waiting_data", "expired_unanalyzed", "not_evaluated", "ready", "SYNTHETIC_STATE", null];
         body.items = body.items.map((item, index) => ({ ...item,
-            analysis_summary: states[index] ? { state: states[index], checked_at: index === 4 ? "SYNTHETIC_TIME" : CHECKED, label: "SYNTHETIC_LABEL", policy_version: "dual-source-coverage-1", current_policy: true, quality_state: states[index] === "ready" ? "complete" : "insufficient" } : undefined,
+            analysis_summary: states[index] ? { state: states[index], checked_at: index === 4 ? "SYNTHETIC_TIME" : CHECKED, label: "SYNTHETIC_LABEL", policy_version: "dual-source-coverage-2", current_policy: true, quality_state: states[index] === "ready" ? "complete" : "insufficient" } : undefined,
         }));
         await route.fulfill({ json: body });
     });
@@ -339,7 +355,7 @@ test("historical checks keep their old policy and never grant current permission
         const response = await route.fetch();
         const body = await response.json();
         const summaries = [
-            { state: "ready", quality_state: "with_gaps", policy_version: "dual-source-coverage-1", current_policy: true },
+            { state: "ready", quality_state: "with_gaps", policy_version: "dual-source-coverage-2", current_policy: true },
             { state: "waiting_data", quality_state: null, policy_version: "dual-source-strict-1", current_policy: false },
             { state: "ready", quality_state: null, policy_version: "dual-source-strict-1", current_policy: false },
             { state: "ready" },
@@ -378,7 +394,7 @@ test("unreadable history checks show an isolated error and recover without repla
             state: unavailable && index === 0 ? "not_evaluated" : "ready",
             checked_at: unavailable && index === 0 ? null : CHECKED,
             scope: "last_saved_check", unavailable: unavailable && index < 2,
-            policy_version: "dual-source-coverage-1", current_policy: true, quality_state: "with_gaps",
+            policy_version: "dual-source-coverage-2", current_policy: true, quality_state: "with_gaps",
             error: "SYNTHETIC_PRIVATE_STORAGE_ERROR",
         } }));
         await route.fulfill({ json: body });

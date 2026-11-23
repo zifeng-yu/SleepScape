@@ -5,7 +5,7 @@
     "synthetic": true,
     "night_date": "2001-01-02",
     "timezone": "Asia/Shanghai",
-    "input_hash": "685ef6c7bc6aed3bea7e3ca6baa6861d2ebfb17f904f90fa7c25731b3b50c233",
+    "input_hash": "7c95a0c39d0dcb3ad7b62fc1e22c479df3e19a1081ad5bbb4dc8f8001d7f1ad4",
     "data_cutoff_at": "2001-01-02T01:02:00Z",
     "is_provisional": false,
     "readiness": "ready",
@@ -14,7 +14,7 @@
       "end_at": "2001-01-01T22:00:00Z"
     },
     "completeness": {
-      "policy_version": "dual-source-coverage-1",
+      "policy_version": "dual-source-coverage-2",
       "policy": {
         "min_channel_coverage": 0.99,
         "max_affected_span_seconds": 300
@@ -223,7 +223,7 @@
   "output": {
     "schema_version": "sleep-output-1",
     "night_date": "2001-01-02",
-    "input_hash": "685ef6c7bc6aed3bea7e3ca6baa6861d2ebfb17f904f90fa7c25731b3b50c233",
+    "input_hash": "7c95a0c39d0dcb3ad7b62fc1e22c479df3e19a1081ad5bbb4dc8f8001d7f1ad4",
     "input_quality_state": "with_gaps",
     "status": "complete",
     "summary": {

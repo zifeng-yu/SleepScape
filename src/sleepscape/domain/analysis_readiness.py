@@ -12,9 +12,12 @@ from zoneinfo import ZoneInfo
 from sleepscape.domain.environment_time import summarize_intervals
 from sleepscape.domain.sleep_window import SLEEP_CONFLICTS, sleep_window, utc_instant
 
-POLICY_VERSION = "dual-source-coverage-1"
+POLICY_VERSION = "dual-source-coverage-2"
+READABLE_COVERAGE_POLICIES = frozenset({"dual-source-coverage-1", POLICY_VERSION})
 MIN_CHANNEL_COVERAGE = 0.99
 MAX_AFFECTED_SPAN_SECONDS = 300
+MAX_LIGHT_BUS_LOST_SAMPLES = 2
+LIGHT_BUS_WARNING = "light_bus_sampling_gap"
 _MINUTE = 60_000_000
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _CHANNELS = ("temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative")
@@ -54,6 +57,8 @@ _SEVERE_CHANNEL_CODES = {
     "clipped",
     "time_unknown",
 }
+_LIGHT_BUS_REQUIRED = {"bus_error", "sensor_error"}
+_LIGHT_BUS_ALLOWED = _LIGHT_BUS_REQUIRED | {"partial_window", "warming", "low_light_limit"}
 
 
 def _mapping(value):
@@ -83,6 +88,16 @@ def _iso(value):
 
 def _from_us(value):
     return _iso(_EPOCH + timedelta(microseconds=value))
+
+
+def _counted_light_bus_gap(value, quality):
+    """The firmware excludes failed VEML7700 reads from the scalar statistics."""
+    return (
+        _LIGHT_BUS_REQUIRED <= quality <= _LIGHT_BUS_ALLOWED
+        and value["state"] == "partial"
+        and value["expected_count"] == value["observed_count"] == 60
+        and 1 <= value["expected_count"] - value["valid_count"] <= MAX_LIGHT_BUS_LOST_SAMPLES
+    )
 
 
 def _coalesce_gaps(items):
@@ -146,10 +161,10 @@ def _usable_channel(value, metric, per_minute, row):
     allowed = _SAMPLING_GAP_CODES | (
         {"warming"} if metric == "sound_relative" else {"low_light_limit"}
     )
-    if (
-        quality & _SEVERE_CHANNEL_CODES
-        or quality - allowed
-        or _codes(row.get("quality")) & _CHANNEL_ERRORS
+    if _codes(row.get("quality")) & _CHANNEL_ERRORS:
+        return False
+    if (quality & _SEVERE_CHANNEL_CODES or quality - allowed) and not (
+        metric == "illuminance_lux" and _counted_light_bus_gap(value, quality)
     ):
         return False
     if valid == expected and quality & _SAMPLING_GAP_CODES:
@@ -667,11 +682,12 @@ class _Evaluation:
             observed += value.get("observed_count") if _count(value.get("observed_count")) else 0
             valid += value.get("valid_count") if _count(value.get("valid_count")) else 0
             trusted = _usable_channel(value, metric, per_minute, row)
+            quality = _codes(value.get("quality"))
             strict = (
                 trusted
                 and value["valid_count"] == per_minute
                 and value.get("state") == "available"
-                and not (_codes(value.get("quality")) & _CHANNEL_ERRORS)
+                and not (quality & _CHANNEL_ERRORS)
             )
             interval = {"start": _from_us(max(left, start)), "end": _from_us(min(right, end))}
             if trusted:
@@ -693,7 +709,7 @@ class _Evaluation:
             else:
                 affected.append((left, right))
                 if trusted:
-                    partials.append(interval)
+                    partials.append((interval, "bus_error" in quality, value["valid_count"]))
             if metric == "sound_relative":
                 milliseconds = value.get("valid_duration_ms")
                 if audio_missing is not None and _count(milliseconds) and milliseconds <= 60000:
@@ -725,13 +741,13 @@ class _Evaluation:
                 expected=MAX_AFFECTED_SPAN_SECONDS,
                 recoverability="unknown",
             )
-        for interval in partials:
+        for interval, light_bus_gap, count in partials:
             self.gap(
-                "invalid_channel",
+                LIGHT_BUS_WARNING if light_bus_gap else "invalid_channel",
                 "environment",
                 metric,
-                "counts_incomplete",
-                expected="complete_window",
+                count if light_bus_gap else "counts_incomplete",
+                expected=per_minute if light_bus_gap else "complete_window",
                 interval=interval,
                 recoverability="unrecoverable",
                 warning=meets_coverage and meets_span and not severe,

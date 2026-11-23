@@ -17,7 +17,7 @@ function payload() {
         missing: [], blockers: [], attempt: null, readiness_unavailable: false,
         model: { model: "qwen3.8-max", enabled: true, configured: true, configuration_state: "configured", connection_state: "verified", budget: { used: 1, limit: 30, remaining: 29 } },
         readiness: {
-            policy_version: "dual-source-coverage-1", policy: { min_channel_coverage: 0.99, max_affected_span_seconds: 300 },
+            policy_version: "dual-source-coverage-2", policy: { min_channel_coverage: 0.99, max_affected_span_seconds: 300 },
             night_date: NIGHT, checked_at: "2026-11-09T01:10:00Z", data_state: "ready", core_ready: true,
             quality_state: "with_gaps", window: { start: input.sleep_window.start_at, end: input.sleep_window.end_at, duration_seconds: 25200 },
             missing: [], warnings: input.completeness.warnings.map((row) => ({ ...row, date: NIGHT, last_checked_at: "2026-11-09T01:10:00Z" })),

@@ -97,7 +97,7 @@ function appendReport(body, data, time) {
     const counts = evidence.quality.feeling_counts;
     const ratings = counts ? counts.poor + counts.fair + counts.good : null;
     body.append(el("p", "weekly-report-note", `生成于 ${time.dateTime(generated_at)} · 核验通过 ${evidence.window.eligible_n}/${evidence.window.visible_n} 晚 · ${ratings === null ? "睡感暂不可读" : `已填睡感 ${ratings} 晚`}`));
-    if (data.source_changed === true) body.append(el("p", "weekly-report-note", "数据已更新，以下为生成时的结果。"));
+    if (data.source_changed === true) body.append(el("p", "weekly-report-note", "复盘依据已更新，以下为生成时的结果。"));
     if (data.source_changed === null) body.append(el("p", "weekly-report-note", "暂无法核对当前来源，以下为生成时的结果。"));
     if (evidence.nights.some((night) => night.quality === "with_gaps")) {
         body.append(el("p", "weekly-report-note", "部分夜晚有允许范围内的缺采。"));
@@ -166,6 +166,9 @@ export function weeklyReportPanel(window, signal, time) {
                 ),
             )));
             panel.open = true;
+        } else if (data.state === "ready") {
+            panel.querySelector("summary").textContent += " · 完整度已通过";
+            status.textContent = "窗口内各晚均已通过完整性检查，总结尚未生成。";
         } else {
             status.textContent = (data.state === "blocked" && BLOCKED.get(data.error_code))
                 || STATUS.get(data.state) || "总结暂不可读取";

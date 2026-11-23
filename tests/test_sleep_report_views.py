@@ -14,7 +14,7 @@ DAY = date(2026, 1, 1)
 
 def ready():
     return {
-        "policy_version": "dual-source-coverage-1",
+        "policy_version": "dual-source-coverage-2",
         "policy": {"min_channel_coverage": 0.99, "max_affected_span_seconds": 300},
         "quality_state": "with_gaps",
         "warnings": [],

@@ -187,7 +187,7 @@ def test_mixed_policy_backup_restore_preserves_old_audit_without_rewriting(setti
     with closing(sqlite3.connect(restored_database)) as connection:
         analysis.validate_analysis(connection)
         read = analysis.read_latest(settings.data_dir, "2001-01-02", connection=connection)
-        assert read["policy_version"] == "dual-source-coverage-1"
+        assert read["policy_version"] == "dual-source-coverage-2"
         assert read["quality_state"] == "insufficient"
         assert connection.execute("SELECT version FROM analysis_schema").fetchone()[0] == 1
         payloads = connection.execute(

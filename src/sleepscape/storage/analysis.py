@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import UUID
 
+from sleepscape.domain.analysis_readiness import READABLE_COVERAGE_POLICIES
 from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 ANALYSIS_VERSION = 1
@@ -39,7 +40,10 @@ _BASE_FIELDS = {
 # The old shape is an archival contract, not a second readiness algorithm.
 _POLICY_FIELDS = {
     "dual-source-strict-1": _BASE_FIELDS,
-    "dual-source-coverage-1": _BASE_FIELDS | {"policy", "quality_state", "warnings"},
+    **{
+        version: _BASE_FIELDS | {"policy", "quality_state", "warnings"}
+        for version in READABLE_COVERAGE_POLICIES
+    },
 }
 _CHANNELS = {"temperature_c", "relative_humidity_pct", "illuminance_lux", "sound_relative"}
 _CHANNEL_FIELDS = {
@@ -347,7 +351,7 @@ def _validate_payload(value: dict) -> tuple[str, str]:
         policy_version = value["policy_version"]
         if policy_version not in _POLICY_FIELDS or set(value) != _POLICY_FIELDS[policy_version]:
             _fail()
-        coverage = policy_version == "dual-source-coverage-1"
+        coverage = policy_version in READABLE_COVERAGE_POLICIES
         _bounded_json(value)
         _day(value["night_date"])
         checked_at = _instant(value["checked_at"])

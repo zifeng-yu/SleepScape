@@ -79,7 +79,7 @@
 
 - 检查存储仅有可选analysis_schema/analysis_readiness_checks/analysis_readiness三表；analysis-prepare先备份与临时恢复核验再显式迁移，GET/普通启动不建表。审计不可改删，当前投影指向最新检查；同run_id/日期幂等、不同内容冲突，空间不足拒绝写入。备份验证结构/载荷摘要/引用，无这些表的既有有效备份仍可恢复。字段和步骤只在data-contract.md与operations.md维护。
 
-- 用户已授权以dual-source-coverage-1替代100%门槛：各通道有效采样至少99%，连续受影响分钟范围最多300秒。只容忍有明确计数的少量缺样，时间/来源/配置冲突、核心Garmin缺项与严重错误仍阻塞。分析资格与真实完整率独立；with_gaps必须显示缺口和限制，不能改成100%或补零。当前仅实现此一算法；旧strict审计作为不可变事实按原合同读取/备份，不重写。政策具体口径只维护于data-contract.md。发布证据见核验报告；真实采样计数和时段仅存私有报告及受保护页面，不复制到公开文档。
+- 双源完整性只计算当前策略，门槛与光照短暂通信异常的例外只维护于data-contract.md。分析资格与真实完整率独立，with_gaps保留缺口和限制。旧策略的审计和报告按原合同读取、备份并保留原证据。发布证据见核验报告；真实采样计数和时段仅存私有报告及受保护页面，不复制到公开文档。
 
 - 报告领域为domain/sleep_features.py，资源IO和Schema校验为resources/；Schema/Prompt只在包内维护，文档链接引用，不保留复制稿。services/sleep_inputs.py同快照读取当前与30日基线；services/sleep_analysis.py负责预算、重试、来源核对和唯一发布；storage/sleep_analysis.py负责报告四表及可选手动修订。外呼前结束SQLite事务，发布写事务内再核对资格/输入/来源/配置，不把模型锁等同数据库锁。
 - sleep-analysis-prepare先备份与临时恢复核验，再显式创建sleep_analysis_schema/analysis_inputs/analysis_attempts/sleep_analysis_reports；与原检查三表独立。输入/成功报告不可改删，尝试只从running转终态，不删历史绕过每晚唯一或预算。备份含存在的新表及载荷/引用校验；普通GET/启动/日任务不迁移。

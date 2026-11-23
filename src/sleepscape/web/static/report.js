@@ -189,9 +189,16 @@ function reportSection(data, day, time, executionLabels, errorLabels) {
         if (instant(attempt.retry_after)) section.append(el("p", "analysis-footnote", `最早再尝试时间：${stamp(attempt.retry_after, time)}`));
         return section;
     }
-    if (report.source_changed !== false) add(section, el("p", "report-source-warning", report.source_changed === true
-        ? "报告发布后，依据数据已变化。这里保留原报告及原证据，不自动重写结论；请结合下方当前数据查看。"
-        : "当前数据暂不可核对，无法确认报告依据是否变化。已发布报告和生成时证据仍保留。"));
+    if (report.source_changed === true) {
+        const policyChanged = Array.isArray(report.source_changed_reasons)
+            && report.source_changed_reasons.includes("readiness_policy_changed");
+        section.append(el("p", "report-source-warning", policyChanged
+            ? "报告发布后，完整性规则已更新。下方检查使用当前规则，报告保留生成时的结论和证据。"
+            : "报告发布后，依据数据已变化。这里保留原报告及原证据，不自动重写结论；请结合下方当前数据查看。"));
+    } else if (report.source_changed === null) {
+        section.append(el("p", "report-source-warning",
+            "当前数据暂不可核对，无法确认报告依据是否变化。已发布报告和生成时证据仍保留。"));
+    }
     const content = report.content, evidence = report.evidence;
     const feeling = evidence.morning_feeling ? [evidence.morning_feeling] : [];
     const detail = el("details", "report-evidence");

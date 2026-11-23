@@ -7,7 +7,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from test_analysis_readiness import DAY, NOW, START, evaluate, sample, stamp
+from test_analysis_readiness import DAY, NOW, START, evaluate, light_bus_gap, sample, stamp
 
 from sleepscape.domain.sleep_features import (
     CORE_METRICS,
@@ -75,6 +75,33 @@ def test_current_packaged_contract_and_synthetic_example_are_executable():
     assert len(system_prompt().encode()) <= 4000
     assert len(system_prompt().encode()) + MAX_INPUT_BYTES < 32 * 1024
     assert set(prompt_metadata()) == {"prompt_version", "prompt_sha256", "schema_sha256"}
+
+
+def test_previous_coverage_report_evidence_remains_readable():
+    x = example()
+    x["input"]["completeness"]["policy_version"] = "dual-source-coverage-1"
+    mutate_hash(x["input"])
+    x["output"]["input_hash"] = x["input"]["input_hash"]
+    validate_sleep_input(x["input"])
+    validate_sleep_output(x["output"], x["input"])
+
+
+def test_light_bus_gap_keeps_weighted_light_stats_and_interval_warning():
+    n, e = sample(4)
+    light = light_bus_gap(e, 1)
+    light.update(min=3, mean=3, max=3)
+    p = build(n, e)
+    validate_sleep_input(p)
+    c = p["completeness"]
+    assert c["quality_state"] == "with_gaps"
+    warning = c["warnings"][0]
+    assert warning["code"] == "light_bus_sampling_gap"
+    assert warning["metric"] == "illuminance_lux"
+    assert (warning["expected"], warning["observed"]) == (60, 58)
+    assert c["channels"]["illuminance_lux"]["usable_count"] == 238
+    assert p["timeline"][0]["coverage"]["illuminance_lux"]["usable_count"] == 238
+    assert facts(p)["environment.illuminance_mean"]["value"] == pytest.approx(3 * 58 / 238)
+    assert "sampling_gaps_present" in p["required_limitations"]
 
 
 def test_small_model_contract_has_only_authored_fields_and_short_prompt():

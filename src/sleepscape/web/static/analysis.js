@@ -180,7 +180,7 @@ const QUALITY_STATE = {
     with_gaps: "可分析，有数据缺口",
     insufficient: "数据不足，暂不可分析",
 };
-const POLICY_VERSION = "dual-source-coverage-1";
+const POLICY_VERSION = "dual-source-coverage-2";
 const GAP_CODE = {
     missing_garmin_core: "必需睡眠数据未满足条件",
     missing_previous_day: "前一日背景数据未满足条件",
@@ -189,6 +189,7 @@ const GAP_CODE = {
     configuration_changed: "环境来源、配置或摆位不一致",
     missing_environment_minutes: "环境分钟窗口存在缺口",
     invalid_channel: "通道存在缺测或无效采样",
+    light_bus_sampling_gap: "光照通信短暂异常，保留有效读数",
     insufficient_channel_coverage: "有效采样覆盖不足或预期数量未知",
     excessive_sampling_gap: "连续受影响分钟范围超过上限",
     optional_unavailable: "可选数据未提供或不可用",

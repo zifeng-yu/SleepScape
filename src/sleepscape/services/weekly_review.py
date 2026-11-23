@@ -344,6 +344,22 @@ def review_view(settings, day: date, *, now=None):
                     result["source_changed"] = bool(incomplete) or fingerprint != source_hash
                 except Exception:
                     pass
+            elif run["state"] == "incomplete_data":
+                try:
+                    _, _, incomplete = _snapshot(settings, reader, days, clock)
+                    result.update(
+                        state="incomplete_data" if incomplete else "ready",
+                        incomplete=incomplete,
+                        checked_at=clock.isoformat(),
+                        error_code=None,
+                    )
+                except Exception:
+                    result.update(
+                        state="readiness_unavailable",
+                        incomplete=[],
+                        checked_at=None,
+                        error_code=None,
+                    )
     except Exception:
         if result["report"] is None:
             result.update(state="unavailable", checked_at=None, incomplete=[], error_code=None)

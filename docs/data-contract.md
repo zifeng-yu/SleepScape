@@ -1,6 +1,6 @@
 # 数据契约与展示口径
 
-更新于 2026-11-20。本文定义 Garmin、环境设备、看板、晨起睡感、逐夜解读、7 日复盘和运行账本的字段与计算口径。当前部署见 [README](../README.md#当前状态)，实采与软件证据见[核验报告](verification.md)。
+更新于 2026-11-23。本文定义 Garmin、环境设备、看板、晨起睡感、逐夜解读、7 日复盘和运行账本的字段与计算口径。当前部署见 [README](../README.md#当前状态)，实采与软件证据见[核验报告](verification.md)。
 
 ## 当前数据范围
 
@@ -137,7 +137,7 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 
 | 项目 | 合同 |
 | --- | --- |
-| GET /api/v1/sleep-reviews/{end_date} | 认证只读，返回所选范围、日任务最后一次复盘核验、执行状态与范围完全一致的已保存报告。展示起点变化时按新的实际范围查询，未核对或不可读时来源变化为未知。查询不触发模型、建表、保存检查或重新生成。 |
+| GET /api/v1/sleep-reviews/{end_date} | 认证只读，返回所选范围、执行状态与范围完全一致的已保存报告。若上次因数据不完整而未生成，按当前快照重核，全部合格时返回 `ready`；仍有缺项时返回当前日期及缺项，重核失败时返回 `readiness_unavailable`。此时 `checked_at` 是本次成功重核时间。展示起点改变时使用新的实际范围。查询零模型调用，历史执行记录保留。 |
 | 日任务结果 | 在现有 `daily-run` 中增加独立复盘阶段结果。归属日沿用本轮日任务，执行发生在采集、完整性复查和逐夜分析之后。日期完整度不足、核验不可读、预算阻塞、执行失败和成功各有安全状态，采集终态及逐夜结果保持各自语义。 |
 | 输入与来源变化 | 持久输入记录语义来源摘要、发送输入摘要和生成配置版本，摘要不公开。重复抓取时间和窗口外事实不改变语义摘要。发布后数据改变提示来源更新，原报告与生成时证据持久保留。 |
 | 执行与幂等 | 逐夜与复盘共用 P1 的上海自然日 30 次物理额度、锁、容量准入及 Retry-After。可恢复失败和输出校验失败在同日剩余额度及任务时限内重试，每次单独计数，成功即止。单次调用沿用 180 秒上限。失败和中断保留固定安全码、元数据与已占预算。 |
@@ -478,7 +478,7 @@ GET /api/v1/nights/{D}/analysis沿用访问保护、日期边界及no-store；�
 
 report包含night_date、generated_at、model_ref、prompt_version、input_quality_state、source_changed及source_changed_reasons。content为已校验输出去掉私有input_hash后的对象；evidence仅facts/timeline/events；required_limitations保留生成时限制。公开结果不返回完整模型输入、Prompt、内部input_id/attempt_id/request_id、私有指纹、设备身份或模型配置地址。
 
-source_changed为true/false/null。true表示当前来源指纹已不同；null及current_data_unavailable表示无法比较，不能冒称未改变。已发布报告读取优先，当前数据暂不可用仍保留可用原结论；原报告损坏时明确unavailable，不展示未验证文本。生成时间与当前检查时间分别显示，报告质量不覆盖当前数据质量。
+source_changed为true/false/null。true表示当前来源指纹已不同；若生成时的完整性策略已更新，安全原因标记为readiness_policy_changed。null及current_data_unavailable表示无法比较，不能冒称未改变。已发布报告读取优先，当前数据暂不可用仍保留可用原结论；原报告损坏时明确unavailable，不展示未验证文本。生成时间与当前检查时间分别显示，报告质量不覆盖当前数据质量。
 
 历史GET /api/v1/nights的analysis_summary只读上次保存检查，含state、checked_at、scope=last_saved_check、unavailable、quality_state、policy_version、current_policy；未保存not_evaluated、失败unavailable。report_summary独立包含state、generated_at和unavailable，已发布为complete；它不逐夜重算来源变化。详情GET不能刷新历史审计或生成报告。
 
@@ -529,7 +529,7 @@ source_changed为true/false/null。true表示当前来源指纹已不同；null�
 
 ### 双源完整性门槛
 
-当前唯一计算策略为`dual-source-coverage-1`。分析资格与真实完整程度独立：保留实际缺样；达到以下门槛可以分析并附质量限制。99%与300秒是初始工程参数，不是医学或统计学准确度保证；修改参数须更新策略及验收，不靠界面四舍五入放行。
+当前唯一计算策略为`dual-source-coverage-2`。分析资格与真实完整程度独立：保留实际缺样；达到以下门槛可以分析并附质量限制。99%与300秒是初始工程参数，不是医学或统计学准确度保证；修改参数须更新策略及验收，不靠界面四舍五入放行。
 
 先确定睡眠来源日D及API已闭合主窗口`[start,end)`；必须`start < end <= 快照截止时刻`且不长于24小时，睡眠时长有效、没有尚在进行标记或未解决核心冲突。日期/is_provisional和HTTP200不能证明睡眠闭合。
 
@@ -544,7 +544,9 @@ source_changed为true/false/null。true表示当前来源指纹已不同；null�
 
 采样分母来自不可变测量配置与真实boot网格，整分钟缺记录也计入预期。分子只使用经过合同与质量验证的有效样本：温湿光是有效采样点；声音是完整且有效的一秒窗口。声音`valid_samples`可能包含已收到却未形成有效秒的PCM，不能直接把它作为覆盖分子；保留`valid_count*16000 <= valid_samples <= observed_samples <= expected_samples`与`valid_duration_ms=valid_1s_count*1000=valid_count*1000`等校验。
 
-只容忍明确计数的`partial_window/audio_gap/sensor_error/missing`等缺样，且部分窗口统计来自有效样本。计数合法且valid=0、统计全null可作为零有效采样缺口；valid>0但缺必要统计、非法单位/计数、数值越界、削波、DMA溢出或总线/CRC等严重错误继续阻塞。不会因为覆盖比例达标而重新接受无效值，低光工程提示与声音事件检测预热不应被误作整通道失效。
+只容忍明确计数的`partial_window/audio_gap/sensor_error/missing`等缺样，且部分窗口统计来自有效样本。计数合法且valid=0、统计全null可作为零有效采样缺口；valid>0但缺必要统计、非法单位/计数、数值越界、削波、DMA溢出、CRC错误和超量程等严重错误继续阻塞。低光工程提示与声音事件检测预热不影响完整有效读数的计数。
+
+光照通信异常仅在以下条件同时满足时作为可计数缺样：完整分钟的`expected_count=observed_count=60`，状态为`partial`，其中58或59个样本有效，单位和min/mean/max等原有校验通过；光照质量必须同时含`bus_error`和`sensor_error`，可另含`partial_window`、`warming`、`low_light_limit`。分子只计固件已排除失败读数后留下的有效样本，该分钟计入受影响范围且不计入完全有效分钟。缺口以`light_bus_sampling_gap`保留时间窗、预期及有效数量，满足整晚门槛时作为质量提示。其他通道的总线异常、整条记录的严重标记、计数矛盾或同时出现其他严重标记仍阻塞。
 
 每通道`max_affected_span_seconds`为相邻受影响分钟区间与整分钟缺口合并后的最长跨度。它是保守影响范围，不是精确连续漏采时长；当前分钟统计无法还原每个缺秒的位置。首尾相交分钟的采样计数来自整分钟、分子分母同口径；时长覆盖与连续影响范围才裁至睡眠窗口，保留边界限制。跨boot缺口导致应有网格无法确定时不猜预期数量，不据此通过99%门槛。
 
@@ -556,7 +558,7 @@ source_changed为true/false/null。true表示当前来源指纹已不同；null�
 
 ### 当前检查结果与存储
 
-evaluate_readiness(day, night, environment, now, lookback_days)是纯函数；策略版本为dual-source-coverage-1。服务复用Dashboard已有来源选择和负荷规则，并用同一数据库只读事务读取原始环境投影，不消费显示降采样结果。睡眠时长还必须不超过真实窗口；来源日、单位、字段与资源须匹配睡眠/夜间口径，不能以静息心率或周均HRV替代。核心来源最近请求失败而只剩旧值时阻塞；可选请求失败不会污染核心。
+evaluate_readiness(day, night, environment, now, lookback_days)是纯函数；当前策略版本见上节。服务复用Dashboard已有来源选择和负荷规则，并用同一数据库只读事务读取原始环境投影，不消费显示降采样结果。睡眠时长还必须不超过真实窗口；来源日、单位、字段与资源须匹配睡眠/夜间口径，不能以静息心率或周均HRV替代。核心来源最近请求失败而只剩旧值时阻塞；可选请求失败不会污染核心。
 
 window为UTC start/end及duration_seconds，时间非法、倒置或超过24小时为null。未结束但结构有效的窗口可保留用于解释缺项，不能ready。missing和warnings的每项为code/source/metric/date/window_start/window_end/expected/observed/recoverability/last_checked_at；expected/observed仅为有限非负数、null或固定状态码，不回显源错误。昨日负荷、压力和可选活动日期为D−1，窗口为空，不冒用当夜睡眠范围。相邻同类缺项合并区间，数字累加，不跨有效分钟填平；不截断真实缺项。
 
@@ -570,7 +572,7 @@ environment_summary包含expected_windows、observed_windows、missing_windows�
 
 data_state为waiting_data/ready/expired_unanalyzed。当前上海日往前含今日N日是自动回查范围，默认7，范围1—31；窗口外为expired_unanalyzed，但core_ready仍保留实际判断，可能为true，绝不扩窗或自动调用模型。core_ready与阻塞missing为空相对应，warnings和可选缺项不直接否决资格。新增policy包含min_channel_coverage=0.99/max_affected_span_seconds=300；quality_state为complete/with_gaps/insufficient。历史摘要增加quality_state、policy_version和current_policy：旧审计不补造质量字段、不重算旧结论，只显示旧规则及待复查。
 
-持久化是独立显式动作：可选analysis_schema(version=1)、analysis_readiness_checks（不可变检查审计）和analysis_readiness（每晚最新检查投影）三表。analysis-prepare先创建备份并临时恢复核验，再迁移；普通启动、GET和只读检查不建表。记录包含检查结果、策略、时间、run_id、规范JSON摘要与私有source_fingerprint。检查三表schema_version仍为1，无需改变其结构；报告四表按下节独立显式迁移。旧dual-source-strict-1审计按原字段与原哈希读取，新的coverage策略必须带policy/quality_state/warnings；未知策略或错误字段拒绝，旧算法不保留为可运行分支。重新检查新增不可变记录并切换最新投影，不修改旧检查。同run_id/日期/内容重复保存幂等，内容不同拒绝；当前投影按检查时间和检查ID指向最新审计。每条载荷最多4MiB、单批至多31晚；保存前容量准入，实际写满拒绝，批次不部分成功。旧表、原始观测、检查审计不作为冗余删除。
+持久化是独立显式动作：可选analysis_schema(version=1)、analysis_readiness_checks（不可变检查审计）和analysis_readiness（每晚最新检查投影）三表。analysis-prepare先创建备份并临时恢复核验，再迁移；普通启动、GET和只读检查不建表。记录包含检查结果、策略、时间、run_id、规范JSON摘要与私有source_fingerprint。检查三表schema_version仍为1，无需改变其结构；报告四表按下节独立显式迁移。旧`dual-source-strict-1`与`dual-source-coverage-1`审计按原字段与原哈希读取，两版coverage载荷均须带policy/quality_state/warnings；未知策略或错误字段拒绝，旧算法不保留为可运行分支。重新检查新增不可变记录并切换最新投影，不修改旧检查。同run_id/日期/内容重复保存幂等，内容不同拒绝；当前投影按检查时间和检查ID指向最新审计。每条载荷最多4MiB、单批至多31晚；保存前容量准入，实际写满拒绝，批次不部分成功。旧表、原始观测、检查审计不作为冗余删除。
 
 三表已经纳入SQLite及成套备份的结构、载荷摘要和引用核验；无三表的既有有效备份仍可恢复，半套/错误版本/损坏引用明确失败。持久审计没有默认自动删除策略，长期增长须计入磁盘和备份预算。
 

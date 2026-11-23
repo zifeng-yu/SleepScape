@@ -313,7 +313,7 @@ def test_current_domain_missing_data_result_can_be_persisted_without_a_window(da
     value["source_fingerprint"] = "c" * 64
     analysis.save_results(data_dir, [value], run_id=str(uuid4()))
     read = analysis.read_latest(data_dir, "2001-01-02")
-    assert read["policy_version"] == "dual-source-coverage-1"
+    assert read["policy_version"] == "dual-source-coverage-2"
     assert read["quality_state"] == "insufficient"
     assert read["window"] is read["environment_summary"] is None
 

@@ -76,6 +76,13 @@ def test_actual_window_all_nights_checked_and_one_physical_call(prepared, length
     assert stored["report"] is None
 
     complete(prepared)
+    with DashboardReader(settings.data_dir) as reader:
+        before_run = store.load_run(reader.connection, str(cutoff))
+    view = weekly_review.review_view(settings, cutoff, now=now)
+    assert (view["state"], view["incomplete"], view["report"]) == ("ready", [], None)
+    assert model_runtime.read_state(settings.data_dir)["attempts"] == []
+    with DashboardReader(settings.data_dir) as reader:
+        assert store.load_run(reader.connection, str(cutoff)) == before_run
     morning_feeling.migrate(settings.data_dir)
     morning_feeling.save(settings.data_dir, DAY, Feeling.POOR)
     observed = []
@@ -437,12 +444,13 @@ def test_daily_publishes_both_report_types_on_the_same_ledger(prepared, monkeypa
 def test_with_gaps_and_low_light_flags_are_preserved():
     from zoneinfo import ZoneInfo
 
-    from test_analysis_readiness import DAY, NOW, evaluate, sample
+    from test_analysis_readiness import DAY, NOW, evaluate, light_bus_gap, sample
 
     from sleepscape.domain.weekly_review import nightly_evidence
 
     night, environment = sample(minutes=3)
-    environment["records"][0]["metrics"]["illuminance_lux"]["quality"] = ["low_light_limit"]
+    light = light_bus_gap(environment, 0, 1)
+    light.update(min=3, mean=3, max=3)
     sound = environment["records"][0]["metrics"]["sound_relative"]
     sound.update(
         state="partial",
@@ -458,6 +466,8 @@ def test_with_gaps_and_low_light_flags_are_preserved():
         DAY, night, environment, result, now=NOW, zone=ZoneInfo("Asia/Shanghai")
     )
     assert "low_light_limit" in evidence["limits"]
+    assert "light_bus_sampling_gap" in evidence["limits"]
+    assert evidence["metrics"]["illuminance_lux"] == pytest.approx(3 * 59 / 179)
     assert evidence["metrics"]["sound_relative"] == pytest.approx(-45)
 
 

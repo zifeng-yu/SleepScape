@@ -36,6 +36,18 @@ test("blocked dates are listed without changing history statistics or starting g
     expect(methods).toEqual(["GET"]);
 });
 
+test("a rechecked window displays readiness while waiting for its first report", async ({ page }) => {
+    await page.route("**/api/v1/sleep-reviews/*", (route) => route.fulfill({ json: {
+        window, state: "ready", incomplete: [], report: null,
+    } }));
+    await page.goto(url);
+    const panel = page.locator(".weekly-report");
+    const summary = panel.locator(":scope > summary");
+    await expect(summary).toContainText("完整度已通过");
+    await summary.click();
+    await expect(panel.getByText("窗口内各晚均已通过完整性检查，总结尚未生成。")).toBeVisible();
+});
+
 test("changing the cutoff isolates a late result and a failed read", async ({ page }) => {
     const previous = "2026-11-08";
     let release;
@@ -93,7 +105,7 @@ for (const width of [320, 390]) {
         await page.goto(url);
         const panel = page.locator(".weekly-report");
         await panel.locator(":scope > summary").click();
-        await expect(panel.getByText("数据已更新，以下为生成时的结果。")).toBeVisible();
+        await expect(panel.getByText("复盘依据已更新，以下为生成时的结果。")).toBeVisible();
         await expect(panel.getByText(/核验通过 7\/7 晚/)).toBeVisible();
         await panel.getByText("主睡眠时长 · 中位数", { exact: true }).click();
         await expect(panel.getByText("6小时 · 7 晚")).toBeVisible();

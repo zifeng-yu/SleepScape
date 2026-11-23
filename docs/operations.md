@@ -1,6 +1,6 @@
 # 安装、运行与维护
 
-更新：2026-11-20。已有配置与数据可沿用。云端为持续运行主库，配置值与运行证据分别按本手册和核验报告维护。
+更新：2026-11-23。已有配置与数据可沿用。云端为持续运行主库，配置值与运行证据分别按本手册和核验报告维护。
 本文只维护操作步骤，实施状态与测试结果见[核验报告](verification.md)。
 
 ## 晨起睡感
@@ -455,7 +455,7 @@ sudo -u sleepscape .venv/bin/sleepscape environment-rotate-token --device-id 实
 
 随后在`.env`设置`SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED=true`并重启`sleepscape.service`。只用正确设备Bearer向精确入口`POST /api/v1/ingest/environment-batches`提交无效空对象，可核验认证后返回422而不创建合成事实；无令牌或看板Basic必须返回401。将生成的私有token文件安全取回Mac供配置工具读取，不显示其正文。正式摆位另登记不可变profile，保留旧队列引用的profile；设备2.4GHz Wi-Fi、完整HTTPS地址和实机上传验收见硬件章节。接收服务可用不能代替设备联网通过。
 
-新增完整性版本首次部署时，先在/opt/sleepscape工作目录以sleepscape用户执行analysis-prepare，再执行analysis-check或其--read-only核验，步骤见[双源完整性检查](#双源完整性检查)。本轮coverage政策不新增SQL表；已有合法三表无需重迁移，仍应在发布前验证备份。政策更新后显式analysis-check保存新结果，历史原strict检查不改写。迁移失败不启用新的检查保存流程；只读详情仍不自动建表。无需为验收完整性再次访问Garmin或模型。
+发布完整性策略前先验证备份。目标库通过既有检查存储核验后可直接复查；只在首次初始化时运行 `analysis-prepare`。发布后可按[双源完整性检查](#双源完整性检查)中的指定日期命令保存范围内的新结果。旧审计保留，复查使用已有事实。
 
 通过迁移、访问及恢复核验后，可手动启动同一生产任务入口，再启用定时器：
 

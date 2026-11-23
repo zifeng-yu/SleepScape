@@ -139,7 +139,7 @@ def test_complete_observations_are_ready_today_despite_legacy_provisional_label(
     before = copy.deepcopy((night, environment))
     result = evaluate(night, environment)
     assert result["core_ready"] and result["data_state"] == "ready"
-    assert result["policy_version"] == "dual-source-coverage-1"
+    assert result["policy_version"] == "dual-source-coverage-2"
     assert result["policy"] == {"min_channel_coverage": 0.99, "max_affected_span_seconds": 300}
     assert result["quality_state"] == "complete" and result["warnings"] == []
     assert result["missing"] == []
@@ -510,6 +510,68 @@ def lose_samples(environment, index, metric, count):
     elif not value["valid_count"]:
         value["min"] = value["mean"] = value["max"] = None
     return value
+
+
+def light_bus_gap(environment, index, count=2):
+    value = lose_samples(environment, index, "illuminance_lux", count)
+    value["quality"] += ["bus_error", "warming", "low_light_limit"]
+    return value
+
+
+@pytest.mark.parametrize("missing_samples", [1, 2])
+def test_counted_light_bus_gap_retains_valid_samples_and_downgrades_to_warning(missing_samples):
+    night, environment = sample(10)
+    light_bus_gap(environment, 2, missing_samples)
+    before = copy.deepcopy(environment)
+    result = evaluate(night, environment)
+    channel = result["environment_summary"]["channels"]["illuminance_lux"]
+    assert result["core_ready"] and result["quality_state"] == "with_gaps"
+    assert channel["usable_count"] == channel["valid_count"] == 600 - missing_samples
+    assert channel["missing_count"] == missing_samples
+    assert channel["effective_coverage_ratio"] == (600 - missing_samples) / 600
+    assert channel["valid_windows"] == 9 and channel["max_affected_span_seconds"] == 60
+    assert len(result["warnings"]) == 1
+    warning = result["warnings"][0]
+    assert warning["code"] == "light_bus_sampling_gap"
+    assert warning["window_start"] == stamp(START + timedelta(minutes=2))
+    assert warning["window_end"] == stamp(START + timedelta(minutes=3))
+    assert (warning["expected"], warning["observed"]) == (60, 60 - missing_samples)
+    assert environment == before
+
+
+@pytest.mark.parametrize(
+    ("count", "patch"),
+    [
+        (0, {}),
+        (3, {}),
+        (60, {}),
+        (2, {"observed_count": 59}),
+        (2, {"unit": "percent"}),
+        (2, {"mean": None}),
+        (2, {"quality": ["bus_error", "warming"]}),
+        (2, {"quality": ["bus_error", "sensor_error", "out_of_range"]}),
+    ],
+)
+def test_light_bus_exception_excludes_contradictions_larger_gaps_and_other_errors(count, patch):
+    night, environment = sample(110)
+    light_bus_gap(environment, 2, count).update(patch)
+    result = evaluate(night, environment)
+    assert not result["core_ready"]
+    assert codes(result) == {"invalid_channel"}
+
+
+@pytest.mark.parametrize(
+    ("minutes", "affected", "blocker"),
+    [(3, 1, "insufficient_channel_coverage"), (30, 6, "excessive_sampling_gap")],
+)
+def test_counted_light_bus_gap_still_obeys_both_night_thresholds(minutes, affected, blocker):
+    night, environment = sample(minutes)
+    for index in range(affected):
+        light_bus_gap(environment, index)
+    result = evaluate(night, environment)
+    assert result["data_state"] == "waiting_data"
+    assert blocker in codes(result)
+    assert not result["warnings"]
 
 
 def test_partial_sound_uses_complete_seconds_not_pcm_count_and_retains_true_gaps():

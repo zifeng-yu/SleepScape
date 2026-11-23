@@ -1,6 +1,6 @@
 # 项目架构与实施边界
 
-更新：2026-11-20。本文维护项目范围、模块职责和后续扩展边界；最新实测结果集中在 [核验报告](verification.md)。
+更新：2026-11-23。本文维护项目范围、模块职责和后续扩展边界；最新实测结果集中在 [核验报告](verification.md)。
 
 ## 目标和约束
 
@@ -97,7 +97,7 @@ Garmin官方API → adapters → services：采集/核验
 | domain/analysis_readiness.py、services/readiness.py（P4第一步已实现） | 闭合睡眠窗口、Garmin必需项及原始四通道、缺口/时间/配置判断；同一只读快照和显式保存 | GET只计算不保存；不外呼，不是LLM特征或报告证据包 |
 | `storage/analysis.py`、`storage/sleep_analysis.py`（P4已实现） | 检查三表、独立报告四表与可选手动修订、不可变证据/成功报告、尝试终态和显式迁移 | 先备份/恢复核验再迁移；容量保护，备份涵盖可选表，发布写事务再次guard来源 |
 | `domain/sleep_features.py`、`resources/`、`services/{sleep_inputs,sleep_analysis}.py`（P4） | 逐夜特征、可选睡感、输出验证、同快照、重试与唯一报告 | 外呼前结束事务；发布时复查来源，原报告保留生成时证据 |
-| `domain/{sleep_review,sleep_window,weekly_review}.py`、`services/weekly_review.py`、`storage/weekly_review.py` | 历史中位数与日历窗口、7 日取证、共享预算重试、唯一总结和失败审计 | 历史统计独立于模型门槛，模型阶段逐日复用完整性检查，GET 只读；物理调用统一经 P1 账本 |
+| `domain/{sleep_review,sleep_window,weekly_review}.py`、`services/weekly_review.py`、`storage/weekly_review.py` | 历史中位数与日历窗口、7 日取证、共享预算重试、唯一总结和失败审计 | 历史统计独立于模型门槛，模型阶段和页面重核逐日复用完整性检查，GET 只读；物理调用统一经 P1 账本 |
 
 依赖向业务和基础能力收敛，不让领域层反向导入服务层。Web视图与CLI核验使用相同的负荷口径；
 来源选择、时效和展示状态保留在用例层。`acceptance.py`是用户可调用的离线数据验收能力，属于正式程序。
