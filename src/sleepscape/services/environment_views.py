@@ -1,9 +1,9 @@
 """Browser-safe environment time views; no analysis readiness or model calls."""
 
-import hashlib
 from datetime import UTC, datetime
 
 from sleepscape.config import Settings
+from sleepscape.domain.environment import environment_ref as _ref
 from sleepscape.domain.environment_time import (
     TIME_MAPPING_QUALITY_CODES,
     summarize_intervals,
@@ -11,12 +11,6 @@ from sleepscape.domain.environment_time import (
     utc_to_us,
 )
 from sleepscape.storage.environment_reader import EnvironmentReader
-
-
-def _ref(kind: str, *identity: str) -> str:
-    # Public references remain stable across reads/backups but contain no source identifiers.
-    digest = hashlib.sha256("\0".join((kind, *identity)).encode()).hexdigest()[:24]
-    return f"{kind}-{digest}"
 
 
 def _window(start_us: int, end_us: int) -> dict:
@@ -50,7 +44,7 @@ def _source(row: dict) -> dict:
         if profile["hardware_model"] in {"m5stack-c008-c"}
         else "unknown",
         "firmware_version": profile["firmware_version"]
-        if profile["firmware_version"] in {"0.2.0", "0.3.0"}
+        if profile["firmware_version"] in {"0.2.0", "0.3.0", "0.4.0"}
         else "unknown",
         "temperature_sensor": profile["temperature_sensor"]
         if profile["temperature_sensor"] in {"dfrobot-sen0528-aht20"}

@@ -119,7 +119,7 @@ def test_small_model_contract_has_only_authored_fields_and_short_prompt():
     assert schema["type"] == "object" and schema["additionalProperties"] is False
     assert len(canonical_json(schema).encode()) < 2200
     assert len(system_prompt().encode()) <= 2100
-    assert prompt_metadata()["prompt_version"] == "sleep-observation-4"
+    assert prompt_metadata()["prompt_version"] == "sleep-observation-5"
     serialized = canonical_json(schema)
     for field in ("input_hash", "night_date", "evidence_level", "limitations", "status"):
         assert f'"{field}"' not in serialized

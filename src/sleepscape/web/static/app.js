@@ -120,6 +120,7 @@ function notice(message = "", error = false) {
     node.classList.toggle("error", error);
 }
 function loading() {
+    for (const audio of content.querySelectorAll("audio")) audio.pause();
     state.chart?.destroy();
     state.chart = null;
     const grid = el("div", "skeleton-grid");
@@ -178,11 +179,20 @@ async function loadView(refreshStatus = false) {
     );
     updateNav();
     try {
-        if (!state.status || refreshStatus)
-            state.status = await api("status", state.abort.signal);
-        if (!state.metricsLoaded || refreshStatus) {
+        const fullStatus = state.view === "status";
+        const signal = state.abort.signal;
+        const needsStatus = !state.status || refreshStatus || (fullStatus && !state.status.database);
+        const needsMetrics = !state.metricsLoaded || refreshStatus;
+        const [status, metrics] = await Promise.all([
+            needsStatus ? api(fullStatus ? "status" : "status?navigation=true", signal) : state.status,
+            needsMetrics ? api("metrics", signal).catch(() => null) : null,
+        ]);
+        if (generation !== state.generation) return;
+        state.status = status;
+        if (needsMetrics) {
             try {
-                configureMetrics(await api("metrics", state.abort.signal));
+                if (!metrics) throw new Error("metrics_unavailable");
+                configureMetrics(metrics);
                 state.metricsLoaded = true;
                 state.metricsError = false;
                 state.hidden = new Set([...state.hidden].filter(validSeriesID));
@@ -241,6 +251,8 @@ async function loadView(refreshStatus = false) {
         const toolbar = dateToolbar();
         toolbar.append(morningFeeling(state.date, state.abort.signal));
         content.replaceChildren(toolbar);
+        const panel = analysisPanel();
+        loadAnalysis(generation, state.date, signal, panel);
         let night;
         try {
             night = await api(`nights/${state.date}`, state.abort.signal);
@@ -255,13 +267,13 @@ async function loadView(refreshStatus = false) {
         if (generation !== state.generation) return;
         state.night = night;
         state.timeline = null;
-        renderNight(night);
-        loadAnalysis(
-            generation,
-            state.date,
-            state.abort.signal,
-            $("#sleep-analysis-panel"),
-        );
+        if (panel.getAttribute("aria-busy") === "true" &&
+            typeof night?.published_summary === "string" && night.published_summary.length <= 300) {
+            panel.replaceChildren(el("h2", "", "本晚睡眠解读"),
+                el("p", "report-prose", night.published_summary),
+                el("p", "analysis-note", "以上为已发布解读。正在核对当前数据并读取完整报告…"));
+        }
+        renderNight(night, panel);
         await loadTimeline();
     } catch (error) {
         if (error.name === "AbortError" || generation !== state.generation)
@@ -274,13 +286,12 @@ async function loadAnalysis(generation, date, signal, panel) {
     if (!panel) return;
     try {
         const data = await api(`nights/${date}/analysis`, signal);
-        if (generation !== state.generation || !panel.isConnected) return;
+        if (generation !== state.generation) return;
         renderAnalysis(panel, data, date, time);
     } catch (error) {
         if (
             error.name === "AbortError" ||
-            generation !== state.generation ||
-            !panel.isConnected
+            generation !== state.generation
         )
             return;
         renderAnalysisUnavailable(panel, [401, 403].includes(error.status));
@@ -463,7 +474,7 @@ function metricCard(title, key, symbol, night) {
     add(root, value, sub, details);
     return root;
 }
-function renderNight(night) {
+function renderNight(night, panel) {
     if (!night) {
         const waiting = dashboardStartDate() && !validDate(state.status?.latest_night);
         content.append(
@@ -476,7 +487,7 @@ function renderNight(night) {
                         : "可选择其他日期。没有记录的日期不会被自动跳过，也不会按零值显示。",
                 ),
             ),
-            analysisPanel(),
+            panel,
             timelinePanel(),
             eventsPanel([]),
         );
@@ -527,7 +538,7 @@ function renderNight(night) {
     add(
         content,
         cards,
-        analysisPanel(),
+        panel,
         sleepPanel(night),
         secondary,
         timelinePanel(),
@@ -905,6 +916,7 @@ async function loadTimeline() {
         const unique = [
             ...new Map(events.map((event) => [event.key, event])).values(),
         ];
+        for (const audio of content.querySelectorAll("#events-panel audio")) audio.pause();
         $("#events-panel")?.replaceWith(eventsPanel(unique));
     } catch (error) {
         if (

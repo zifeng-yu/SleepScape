@@ -1,5 +1,7 @@
 """Read-only environment projection into the dashboard's shared timeline contract."""
 
+import sqlite3
+import time
 from collections import defaultdict
 from datetime import datetime
 
@@ -8,6 +10,7 @@ from sleepscape.domain.environment_display import finite, reduce_windows
 from sleepscape.domain.environment_time import utc_to_us
 from sleepscape.domain.metrics import metric_definition, metric_registry
 from sleepscape.services.environment_views import EnvironmentViewService
+from sleepscape.storage import event_audio
 
 MAX_GROUPS = 8
 MAX_EVENTS = 100
@@ -222,6 +225,15 @@ def environment_timeline(
         if len(kept_sources) < MAX_SOURCES:
             kept_sources.add(event["source_ref"])
     visible_events = [event for event in events if event["source_ref"] in kept_sources][:MAX_EVENTS]
+    try:
+        playable = event_audio.available(
+            settings.data_dir, [e["key"] for e in visible_events], time.time()
+        )
+    except (sqlite3.Error, OSError, ValueError):
+        playable = set()
+    for event in visible_events:
+        if event["key"] in playable:
+            event["audio_available"] = True
     chosen_groups = {key for key, _ in selected}
     metadata = {
         **view,

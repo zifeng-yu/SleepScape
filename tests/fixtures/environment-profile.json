@@ -1,7 +1,7 @@
 {
   "hardware_model": "m5stack-c008-c",
   "hardware_revision": "stock",
-  "firmware_version": "0.3.0",
+  "firmware_version": "0.4.0",
   "temperature_sensor": "dfrobot-sen0528-aht20",
   "light_sensor": "dfrobot-sen0228-veml7700",
   "microphone": "spm1423",

@@ -23,6 +23,26 @@ function eventDetails(event, { time, timeline, onLocate }) {
         el("span", "event-meta", sound
             ? `较响累计 ${numericText(metrics.active_duration_ms / 1000, 1)}秒`
             : duration(metrics.duration_seconds)));
+    if (sound && event.audio_available === true && /^record-[0-9a-f]{24}$/.test(event.key)) {
+        const audio = el("audio");
+        audio.preload = "none";
+        audio.src = `/api/v1/event-audio/${event.key}`;
+        const play = button("播放", async (click) => {
+            click.preventDefault();
+            click.stopPropagation();
+            if (!audio.paused) { audio.pause(); return; }
+            for (const other of detail.closest(".events-list")?.querySelectorAll("audio") || []) {
+                if (other !== audio) other.pause();
+            }
+            try { await audio.play(); } catch (error) {
+                if (error.name !== "AbortError") play.textContent = "无法播放";
+            }
+        });
+        audio.addEventListener("playing", () => { play.textContent = "暂停"; });
+        audio.addEventListener("pause", () => { play.textContent = "播放"; });
+        audio.addEventListener("ended", () => { play.textContent = "播放"; });
+        summary.append(play, audio);
+    }
     const body = el("div", "event-detail");
     if (event.type === "activity") add(body,
         el("span", "", `训练负荷 ${numericText(metrics.training_load, 1)}`),
@@ -58,7 +78,7 @@ function eventsPanel(events, options) {
     const help = add(el("details", "event-help"),
         el("summary", "", "声音摘要是什么意思？"),
         el("p", "", "声音比当时背景明显升高时，设备记录声音变化摘要。持续声音可能按分钟拆开，同一分钟内多个短片段也可能合并；摘要条数不是独立声音次数，更不是觉醒次数。"),
-        el("p", "", "“较响累计”是摘要内达到检测条件的时长，不代表整个起止时段一直很响。只保存统计值，不保存录音，不能识别打鼾或说话；预热和采样缺口也会影响摘要数量。"));
+        el("p", "", "“较响累计”是摘要内达到检测条件的时长，不代表整个起止时段一直很响。有可回听的睡眠时段片段时，右侧显示播放按钮；预热和采样缺口也会影响摘要数量。"));
     const filters = el("div", "event-filters");
     filters.setAttribute("role", "group");
     filters.setAttribute("aria-label", "关联记录类型");
@@ -72,7 +92,10 @@ function eventsPanel(events, options) {
     selected.setAttribute("aria-live", "polite");
     function show(type) {
         const count = ordered.filter((event) => type === "all" || event.type === type).length;
-        for (const row of rows) row.hidden = type !== "all" && row.dataset.eventType !== type;
+        for (const row of rows) {
+            row.hidden = type !== "all" && row.dataset.eventType !== type;
+            if (row.hidden) row.querySelector("audio")?.pause();
+        }
         for (const b of filters.children) b.setAttribute("aria-pressed", String(b.dataset.eventFilter === type));
         const label = type === "all" ? "关联记录" : TYPES.find(([key]) => key === type)?.[1] || "记录";
         selected.textContent = type === "environment_sound" && !soundAvailable

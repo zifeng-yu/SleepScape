@@ -9,7 +9,7 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
-PROMPT_VERSION = "sleep-observation-4"
+PROMPT_VERSION = "sleep-observation-5"
 
 
 @lru_cache(maxsize=1)

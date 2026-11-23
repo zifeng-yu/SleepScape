@@ -15,7 +15,7 @@ test.beforeEach(async ({ request, page }) => {
 // browser receives the public display policy; real service bounds have separate
 // backend regressions. All returned observations still come from synthetic data.
 async function displayFrom(page, start, { latest = NIGHT } = {}) {
-    await page.route("**/api/v1/status", async (route) => {
+    await page.route(/\/api\/v1\/status(?:\?navigation=true)?$/, async (route) => {
         const response = await route.fetch();
         const payload = await response.json();
         expect(payload.demo).toBe(true);

@@ -182,7 +182,7 @@ test("environment status distinguishes upload evidence from capture and realtime
     await expect(panel).toContainText(/2026[\/-]11[\/-]10/);
     await expect(panel).toContainText("1 / 1");
     await expect(panel).toContainText("12 / 0");
-    await expect(panel).toContainText("0.3.0");
+    await expect(panel).toContainText("0.4.0");
     await expect(panel).toContainText("不代表实时在线");
     await expect(panel).not.toContainText("browser-private");
     const ready = page.waitForResponse((response) =>

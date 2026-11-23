@@ -14,6 +14,9 @@ from sleepscape.storage.environment import EnvironmentError, authenticate
 INGEST_PATH = "/api/v1/ingest/environment-batches"
 
 
+AUDIO_PATH = "/api/v1/ingest/event-audio"
+
+
 class DeviceGate:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -36,7 +39,7 @@ class DeviceGate:
     async def check(self, request):
         if not self.settings.environment_ingest_enabled:
             return JSONResponse({"error": "environment_ingest_disabled"}, status_code=405)
-        if request.scope.get("raw_path", b"") != INGEST_PATH.encode():
+        if request.scope.get("raw_path", b"") not in {INGEST_PATH.encode(), AUDIO_PATH.encode()}:
             return JSONResponse({"error": "invalid_ingest_path"}, status_code=404)
         host = request.url.hostname
         if host not in self.settings.web_allowed_hosts and not (
@@ -57,9 +60,8 @@ class DeviceGate:
             return JSONResponse(
                 {"error": "compressed_environment_body_not_supported"}, status_code=415
             )
-        if (
-            request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            != "application/json"
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != (
+            "application/octet-stream" if request.url.path == AUDIO_PATH else "application/json"
         ):
             return JSONResponse({"error": "environment_json_required"}, status_code=415)
         header = request.headers.get("authorization", "")

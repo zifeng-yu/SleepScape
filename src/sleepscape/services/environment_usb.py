@@ -17,7 +17,8 @@ from sleepscape.services import backup
 from sleepscape.services.environment import identifiers, parse_batch, read_profile
 from sleepscape.storage import environment as storage
 
-USB_FIRMWARE_VERSION = "0.3.0"
+USB_FIRMWARE_VERSION = "0.4.0"
+SUPPORTED_USB_VERSIONS = {"0.3.0", USB_FIRMWARE_VERSION}
 
 
 class USBCollectionError(Exception):
@@ -25,15 +26,25 @@ class USBCollectionError(Exception):
 
 
 def prepare(
-    settings: Settings, device_id: str, profile_id: str, profile_path: Path, placement_id: str
+    settings: Settings,
+    device_id: str,
+    profile_id: str,
+    profile_path: Path,
+    placement_id: str,
+    *,
+    version=None,
 ) -> MeasurementProfile:
     identifiers(device_id, profile_id)
     identifiers(placement_id)
     original = read_profile(profile_path)
     profile = MeasurementProfile.model_validate(
-        {**original.model_dump(mode="json"), "placement_id": placement_id}
+        {
+            **original.model_dump(mode="json"),
+            "placement_id": placement_id,
+            "firmware_version": version or original.firmware_version,
+        }
     )
-    if profile.firmware_version != USB_FIRMWARE_VERSION:
+    if profile.firmware_version not in SUPPORTED_USB_VERSIONS:
         raise USBCollectionError("usb_measurement_profile_version_mismatch")
     if storage.local_registration_required(settings.data_dir, device_id, profile_id, profile):
         if (settings.data_dir / "sleepscape.sqlite3").is_file():
@@ -89,6 +100,7 @@ def capture(
     duration: int,
     exchange: Callable[[dict], dict],
     *,
+    expected_version: str | None = None,
     progress: Callable[[dict], None] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -122,7 +134,11 @@ def capture(
             started = True
         if (
             not started
-            or response.get("firmware_version") != USB_FIRMWARE_VERSION
+            or response.get("firmware_version") not in SUPPORTED_USB_VERSIONS
+            or (
+                expected_version is not None
+                and response.get("firmware_version") != expected_version
+            )
             or response.get("device_id") != device_id
             or response.get("profile_id") != profile_id
         ):
@@ -132,7 +148,7 @@ def capture(
         deadline = monotonic() + duration
         last_anchor = monotonic()
         if progress:
-            progress({"status": "usb_collecting", "firmware_version": USB_FIRMWARE_VERSION})
+            progress({"status": "usb_collecting", "firmware_version": response["firmware_version"]})
         while monotonic() < deadline:
             response = exchange({"command": "usb_poll"})
             if response.get("status") == "usb_idle":

@@ -263,6 +263,14 @@ def run_daily(settings, *, now=None, retry=False, gateway=None):
     if result["action"] not in {"executed", "skipped_existing", "retry_not_allowed"}:
         result["readiness"] = {"status": "skipped", "code": "collection_not_finished"}
         return result
+    from sleepscape.services.event_audio import reconcile
+
+    try:
+        reconcile(settings, now)
+        result["event_audio"] = {"status": "completed"}
+    except Exception:
+        result["event_audio"] = {"status": "failed", "code": "audio_reconcile_unavailable"}
+
     from sleepscape.services.readiness import check_readiness
     from sleepscape.storage.analysis import AnalysisStorageError
 

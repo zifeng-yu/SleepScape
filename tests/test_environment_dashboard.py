@@ -173,7 +173,7 @@ def test_status_distinguishes_late_receipt_capture_and_not_live_state(fixture):
     assert device["receive_state"] == "recently_received"
     assert device["last_mapped_capture"]["utc_end"] == "2026-01-01T00:01:00Z"
     assert device["currently_collecting"] is None
-    assert device["last_measurement_profile"]["firmware_version"] == "0.3.0"
+    assert device["last_measurement_profile"]["firmware_version"] == "0.4.0"
     assert device["channel_health_scope"] == "last_mapped_minute_not_live"
     assert device["channel_health"]["temperature_c"]["valid_count"] == 6
 

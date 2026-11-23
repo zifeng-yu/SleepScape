@@ -15,3 +15,5 @@ bool sc_network_ready(void);
 int sc_network_post(const char *payload, char *response, size_t capacity);
 /* Last response's integer Retry-After, capped at one day; zero means absent. */
 uint32_t sc_network_retry_after_s(void);
+
+void sc_network_audio(const uint8_t *body, size_t length);

@@ -80,6 +80,7 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 
 可选`SLEEPSCAPE_DASHBOARD_START_DATE`为严格`YYYY-MM-DD`日期，范围2000-01-01至2100-12-31；空值默认不裁剪。其含义为最早可展示的**睡眠归属日**，不是采集或存储起点。
 
+- `GET /api/v1/status?navigation=true` 仅读取导航使用的 timezone、demo、dashboard_start_date、latest_night、latest_success_at、stale。夜晚详情的 published_summary 为已校验发布报告的摘要正文或 null，首次展示时当前来源仍待核对；完整报告和来源变化状态由原有分析接口提供。
 - `GET /api/v1/status.dashboard_start_date`返回配置日期字符串或`null`；`latest_night`与`earliest_night`仅统计允许范围内的睡眠，无可见睡眠时均为`null`。
 - 夜晚列表按该下界裁剪，保留允许区间内的空日；查询或游标完全早于下界时，`items`及`available_dates`为空，`next_cursor=null`。未指定结束日且无可见睡眠时，使用配置时区今天与起始日的较晚者。
 - 早于下界的夜晚详情、夜晚时间轴和分析状态统一返回404及`{"error":"night_before_dashboard_start"}`；前端日期选择、翻页和旧URL同时遵守下界。
@@ -267,7 +268,7 @@ P6成套备份、受控保留、磁盘准入和路径/SSH导出已实现，云�
 
 ### 上传信封和认证
 
-唯一设备HTTP写入口为`POST /api/v1/ingest/environment-batches`，JSON请求使用`Content-Type: application/json`。USB本地路径通过本机程序调用同一校验和存储，不开放新的网络写入口。
+环境统计批次的设备写入口为`POST /api/v1/ingest/environment-batches`，JSON请求使用`Content-Type: application/json`。USB本地路径通过本机程序调用同一校验和存储，不开放新的网络写入口。
 `schema_version=1`是JSON整数，独立于当前只读API的字符串`contract_version="1"`。请求允许补传和乱序，不以到达顺序作为采集顺序。
 
 | 信封字段 | 约束 |
@@ -279,12 +280,12 @@ P6成套备份、受控保留、磁盘准入和路径/SSH导出已实现，云�
 | `device_status` | 可选、每批最多一个有界设备运行快照，与观测分开保存，仍计入64 KiB请求体 |
 
 单次请求体上限为**64 KiB（65,536字节）**，包含整个UTF-8 JSON信封；不接收压缩请求体。
-即使条数未达上限，超过字节上限仍须继续拆批，按字节优先。平时每5分钟上传已完成记录，断网后有界退避重试，恢复后分批补传。
+即使条数未达上限，超过字节上限仍须继续拆批，按字节优先。设备按固件的队列调度上传已完成记录，断网后有界退避重试，恢复后分批补传。
 空请求、未知记录类型、非有限数、字段类型/单位错误、非法计数和超出容量的字符串均拒绝；标识最长64个ASCII字符，单记录质量标记最多16个已登记代码，不接受自由文本日志作为记录。
 
 写入口只在HTTPS下接受专用设备Bearer令牌，令牌不放URL、不写日志、不进入Git。
 看板HTTP Basic/会话Cookie与设备Bearer分别校验：设备令牌不能读健康数据，看板密码不能写设备数据。
-全局GET/HEAD限制已**仅对上述精确路径的POST窄化**，不能对整个`/api`目录放行写方法；尾斜杠、相似前缀和其他路径不成为旁路。
+设备认证仅用于环境批次和[声音事件回听](#声音事件回听)定义的两个精确 POST 路径。浏览器的同源晨起睡感 PUT 单独鉴权。
 现有UI、静态资源和只读API继续按原访问规则运行，不开放跨域。
 
 ### USB本地传输
@@ -368,7 +369,7 @@ USB和HTTPS复用同一`EnvironmentBatch`及逐记录ACK合同、原始记录身
 
 声音另存`expected_samples/observed_samples/valid_samples`、`valid_duration_ms`、`valid_1s_count`、`dma_overflow_count`、`clipped_samples`。
 任一丢样的一秒窗口不进入事件检测和完整窗口汇总；原始样本覆盖率、可用1秒窗口覆盖率分别返回。
-PCM只在短RAM缓冲中用于聚合，不写Flash、不上传、不输出串口，不启用含音频RAM的Flash core dump。
+原始 PCM 在短 RAM 缓冲中用于统计；联网固件可从中编码事件片段。原始 PCM 不写Flash、不上传、不输出串口，不启用含音频RAM的Flash core dump。
 固定增益，不启用AGC、语音增强或动态降噪；处理链改变必须换测量配置。
 
 令有效PCM归一化幅度为`x/32768`，每个有效1秒窗口的均方能量为`E_i=mean((x/32768)^2)`，
@@ -379,7 +380,7 @@ PCM只在短RAM缓冲中用于聚合，不写Flash、不上传、不输出串口
 
 ### 当前光照测量配置
 
-当前SEN0228档案使用`light_sensor="dfrobot-sen0228-veml7700"`及固件版本`0.3.0`。唯一可复制样例为
+SEN0228 档案使用 `light_sensor="dfrobot-sen0228-veml7700"`，固件版本按实物登记。仓库样例对应 `0.4.0`。唯一可复制样例为
 [`firmware/profile.example.json`](../firmware/profile.example.json)，新增的`light_measurement`和`i2c_bus`随不可变档案保存。
 当前组合的完整编译、原生驱动逻辑、接收回归和实物读数验证状态以[核验报告](verification.md)为准；短时可读不代表已完成校准或整夜稳定性验收。
 
@@ -406,7 +407,7 @@ DFRobot旧资料中的0.0036 lx/count以及旧库系数不作为当前实现参�
 代价是较强室内光/白天可能超量程；需要更宽量程时另定配置和驱动规则并重新验证，不回写已有观测。
 
 上传`schema_version=1`及环境SQLite事实表保持不变。旧测量档案缺少上述两对象时继续保留原样和原哈希，不补写伪造的参数；
-新注册的VEML7700档案必须包含完整两对象。当前C008-C固件0.3.0对应的档案严格核对表中固定参数，历史0.2.0档案保留相同核对规则；不能登记另一套虽数学自洽却不符刷入程序的增益、量程或总线参数。接收端按已登记档案验证有效光照范围及低光标记一致性；历史无光照配置对象的记录不套用新阈值，缓存中已写入的质量标记不被新固件追溯重算。
+新注册的VEML7700档案必须包含完整两对象。C008-C 固件 0.2.0、0.3.0 和 0.4.0 的档案均核对表中固定参数；不能登记另一套虽数学自洽却不符刷入程序的增益、量程或总线参数。接收端按已登记档案验证有效光照范围及低光标记一致性；历史无光照配置对象的记录不套用新阈值，缓存中已写入的质量标记不被新固件追溯重算。
 更换硬件、光照档位或摆位必须使用新的`measurement_profile_id`；旧档案和已采数据属于历史证据，不能作为旧版程序清理。
 
 ### 相对声音事件（工程默认，待真机验证）
@@ -636,3 +637,11 @@ input_hash=sha256(规范JSON)：移除input_hash/data_cutoff_at/is_provisional�
 输出schema_version固定sleep-output-1；含summary、observations、hypotheses、actions、limitations及input_quality_state，日期/hash/quality须对应输入。每个evidence_ids数组内部唯一；limitations由程序按原顺序完整复制required_limitations，保持不增加、不遗漏、不重复，本地继续强制唯一与集合相同。成功报告必须有四类观测、有效证据ID、对应类别/假设因素依据、保留全部限制，不能引用null不可用事实；with_gaps须在概况或环境观察说明缺采。报告complete仅表示生成完成，不改写为100%采样完整。insufficient_input必须空观察/假设/建议，并按失败处理。
 
 Schema之外校验必需事实、白名单单位/来源/周期、计数关系/比率、基线分母及派生差值、时间边界、ID唯一、引用和字节预算。数值直接显示生成时证据卡，模型文字不写阿拉伯数字/具体时间/自行换算比例；禁止明显凭据、外链、注入和医疗处置文本。有限规则不能证明所有自然语言因果/方向判断，真实报告仍需对照证据人工核验，不将观测升级为诊断或确定因果。
+
+## 声音事件回听
+
+`POST /api/v1/ingest/event-audio` 单独使用既有设备 Bearer 和 HTTPS，Content-Type 为 application/octet-stream。首行为 ASCII 的 boot UUID、起点单调毫秒、采集 UTC 毫秒，空格分隔，换行后是 8 kHz 单声道 G.711 μ-law。每个采样 125 微秒。设备身份来自令牌，事件序号由单调分钟确定，按设备、boot、事件序号对应摘要。相同片段重传幂等；身份冲突拒绝。原观测协议和去重规则独立。
+
+候选时段采用上海时间 18:00 至次日 12:00。每条摘要至多一个连续片段，每段最多十二秒，每个候选夜最多六十段，满额约 5.76 MB。压缩音频存于独立私有库，主库备份、模型输入和日志均排除音频。音频库页容量上限 200 MiB，另有 SQLite 临时事务开销。磁盘准入或容量不足则拒收。设备 Flash 不留音频。
+
+09:00 采集后按醒来日读取已结束的 Garmin 主睡眠窗口，同时核对同一 boot/序号的有效 UTC 索引和事件包络。设备采集时钟与索引差超过两秒舍弃；在窗口边界内缩至少 250 毫秒，并按两时钟差和已知误差扩大余量，按采样点裁剪。该保护余量未校准为绝对时间精度。只有已发布片段能经看板鉴权的 `GET /api/v1/event-audio/{record_ref}` 读取为 WAV；播放前复核现行窗口，后续收窄不恢复已删除样本。关联失败显示原摘要。候选片段自采集起满 48 小时过期，正式片段满 30 天过期。Web 启动及运行时每分钟清理，设备上传、每日任务也执行过期清理。服务停机期间不提供读取，恢复运行后清理。

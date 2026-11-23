@@ -39,14 +39,17 @@ def read_snapshot(
     view = DashboardService(settings)
     view._now = lambda: clock
     with _snapshot_reader(settings, connection) as reader:
-        night = view.readiness_night(reader, day)
+        context = view.readiness_context(reader, day - timedelta(days=30), day)
+        night = view.readiness_night(reader, day, context=context)
         environment = _environment(settings, reader, night, clock)
         readiness = evaluate_readiness(
             day, night, environment, now=clock, lookback_days=settings.garmin_lookback_days
         )
         readiness["source_fingerprint"] = _fingerprint(night, environment, readiness)
         baselines = [
-            view.readiness_night(reader, day - timedelta(days=offset))
+            view.readiness_night(
+                reader, day - timedelta(days=offset), context=context, optional=False
+            )
             for offset in range(30, 0, -1)
         ]
         morning_feeling = None

@@ -21,7 +21,11 @@ from sleepscape.storage.analysis import AnalysisStorageError, read_bulk
 from sleepscape.storage.morning_feeling import read_range as read_feeling_range
 from sleepscape.storage.reader import SUCCESS, DashboardReader, validate_dates, validate_window
 from sleepscape.storage.reports import read_private_json
-from sleepscape.storage.sleep_analysis import SleepAnalysisStorageError, read_report_summaries
+from sleepscape.storage.sleep_analysis import (
+    SleepAnalysisStorageError,
+    read_report,
+    read_report_summaries,
+)
 
 RESOURCE_LABELS = {
     "sleep": "睡眠详情",
@@ -573,6 +577,17 @@ class DashboardService:
                 result["quality"] = sorted(set(result["quality"] + ["sleep_window_unavailable"]))
             else:
                 result["environment_only"] = False
+            try:
+                saved = (
+                    read_report(
+                        self.settings.data_dir, day.isoformat(), connection=reader.connection
+                    )
+                    if reader.present
+                    else None
+                )
+            except SleepAnalysisStorageError:
+                saved = None
+            result["published_summary"] = saved["output"]["summary"]["text"] if saved else None
             return {**self._header(reader), **result}
 
     def nights(
@@ -874,6 +889,20 @@ class DashboardService:
                 "events": list(chosen_events.values()) + environment["events"],
                 "environment": environment["environment"],
                 "stages": intervals,
+            }
+
+    def navigation_status(self) -> dict:
+        with DashboardReader(self.settings.data_dir) as reader:
+            start = self.settings.dashboard_start_date
+            _, latest = reader.night_bounds(start)
+            success = reader.data_as_of()
+            last_success = _time(success)
+            return {
+                "dashboard_start_date": start.isoformat() if start else None,
+                "latest_night": latest,
+                "latest_success_at": success,
+                "timezone": self.settings.timezone,
+                "stale": last_success is None or self._now() - last_success > timedelta(hours=36),
             }
 
     def status(self) -> dict:

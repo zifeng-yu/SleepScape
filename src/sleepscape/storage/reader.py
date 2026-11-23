@@ -176,6 +176,15 @@ class DashboardReader:
             )
         ]
 
+    def night_bounds(self, start_date: date | None = None):
+        nights = self._query(
+            "SELECT MIN(date),MAX(date) FROM normalized_records WHERE kind='sleep' "
+            "AND resource IN ('sleep','sleep_summaries')"
+            + (" AND date >= ?" if start_date is not None else ""),
+            (start_date.isoformat(),) if start_date is not None else (),
+        )
+        return tuple(nights[0]) if nights else (None, None)
+
     def status(self, start_date: date | None = None) -> dict:
         counts = {"record_count": 0, "raw_snapshot_count": 0, "request_count": 0}
         for key, table in (
@@ -185,12 +194,7 @@ class DashboardReader:
         ):
             rows = self._query(f"SELECT COUNT(*) FROM {table}")
             counts[key] = rows[0][0] if rows else 0
-        nights = self._query(
-            "SELECT MIN(date),MAX(date) FROM normalized_records WHERE kind='sleep' "
-            "AND resource IN ('sleep','sleep_summaries')"
-            + (" AND date >= ?" if start_date is not None else ""),
-            (start_date.isoformat(),) if start_date is not None else (),
-        )
+        earliest, latest_night = self.night_bounds(start_date)
         runs = self._query(
             "SELECT status,started_at,finished_at,plan_json,summary_json FROM runs "
             "ORDER BY started_at DESC,rowid DESC LIMIT 1"
@@ -221,8 +225,8 @@ class DashboardReader:
             "present": self.present,
             "size_bytes": size,
             **counts,
-            "earliest_night": nights[0][0] if nights else None,
-            "latest_night": nights[0][1] if nights else None,
+            "earliest_night": earliest,
+            "latest_night": latest_night,
             "latest_run": run,
             "resources": [_attempt(row) for row in latest],
             "last_success": successes,

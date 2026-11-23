@@ -415,6 +415,8 @@ def test_get_report_never_writes_calls_or_exposes_private_metadata(prepared, mon
             body = response.json()
             assert body["report"]["content"]["status"] == "complete"
             assert body["report"]["source_changed"] is False
+            night = client.get(f"/api/v1/nights/{DAY}").json()
+            assert night["published_summary"] == body["report"]["content"]["summary"]["text"]
             for private in (
                 "input_hash",
                 "source_fingerprint",

@@ -631,6 +631,7 @@ def serial_status(port: str, *, serial_class=None, timeout=20.0) -> dict[str, st
 
 
 USB_RESPONSES = {
+    "status": {"ready"},
     "usb_start": {"usb_started"},
     "usb_poll": {"usb_batch", "usb_idle"},
     "usb_ack": {"usb_acked"},
@@ -855,16 +856,25 @@ def collect(port: str, duration: int, device_id: str, profile_id: str, placement
     try:
         env = idf_environment()
         settings = Settings()
-        prepare(
-            settings, device_id, profile_id, ROOT / "firmware/profile.example.json", placement_id
-        )
         bridge = USBBridge(port, env)
+        version = bridge.exchange({"command": "status"}).get("firmware_version")
+        if version not in {"0.3.0", "0.4.0"}:
+            raise FirmwareError("usb_measurement_profile_version_mismatch")
+        prepare(
+            settings,
+            device_id,
+            profile_id,
+            ROOT / "firmware/profile.example.json",
+            placement_id,
+            version=version,
+        )
         result = capture(
             settings,
             device_id,
             profile_id,
             duration,
             bridge.exchange,
+            expected_version=version,
             progress=lambda value: print(json.dumps(value, separators=(",", ":")), flush=True),
         )
         print(json.dumps(result, separators=(",", ":")), flush=True)

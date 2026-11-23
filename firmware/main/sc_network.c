@@ -27,6 +27,7 @@ static uint32_t reconnect_seconds = 1;
 static uint32_t last_retry_after;
 static sc_network_time_callback_t time_callback;
 static char endpoint[256];
+static char audio_endpoint[256];
 static char authorization[136];
 
 static void schedule_reconnect(void) {
@@ -78,6 +79,10 @@ esp_err_t sc_network_init(const sc_config_t *config, sc_network_time_callback_t 
         strnlen(config->token, sizeof(config->token)) >= sizeof(config->token) ||
         strncmp(config->server_url, "https://", 8)) return ESP_ERR_INVALID_ARG;
     memcpy(endpoint, config->server_url, strlen(config->server_url) + 1);
+    strcpy(audio_endpoint, endpoint);
+    char *suffix = strrchr(audio_endpoint, '/');
+    if (!suffix || strcmp(suffix, "/environment-batches")) return ESP_ERR_INVALID_ARG;
+    strcpy(suffix, "/event-audio");
     int length = snprintf(authorization, sizeof(authorization), "Bearer %s", config->token);
     if (length < 0 || (size_t)length >= sizeof(authorization)) return ESP_ERR_INVALID_ARG;
     time_callback = callback;
@@ -163,17 +168,17 @@ static bool remaining_timeout(esp_http_client_handle_t client, int64_t deadline)
     return esp_http_client_set_timeout_ms(client, (int)left) == ESP_OK;
 }
 
-int sc_network_post(const char *payload, char *response, size_t capacity) {
+static int post(const char *url, const char *type, const char *payload, size_t request_length,
+                char *response, size_t capacity) {
     last_retry_after = 0;
     if (!payload || !response || capacity < 2) return -ESP_ERR_INVALID_ARG;
     response[0] = 0;
     if (!sc_network_ready()) return -ESP_ERR_INVALID_STATE;
-    size_t request_length = strnlen(payload, REQUEST_LIMIT + 1);
-    if (!request_length || request_length > REQUEST_LIMIT) return -ESP_ERR_INVALID_SIZE;
+    if (!request_length) return -ESP_ERR_INVALID_SIZE;
     size_t limit = capacity - 1;
     if (limit > RESPONSE_LIMIT) limit = RESPONSE_LIMIT;
     esp_http_client_config_t options = {
-        .url = endpoint,
+        .url = url,
         .method = HTTP_METHOD_POST,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .crt_bundle_attach = esp_crt_bundle_attach,
@@ -190,7 +195,7 @@ int sc_network_post(const char *payload, char *response, size_t capacity) {
     if (!client) return -ESP_ERR_NO_MEM;
     int status = -ESP_ERR_INVALID_STATE;
     esp_err_t error = esp_http_client_set_header(client, "Authorization", authorization);
-    if (error == ESP_OK) error = esp_http_client_set_header(client, "Content-Type", "application/json");
+    if (error == ESP_OK) error = esp_http_client_set_header(client, "Content-Type", type);
     if (error == ESP_OK) error = esp_http_client_set_header(client, "Accept", "application/json");
     if (error == ESP_OK) error = esp_http_client_set_header(client, "Connection", "close");
     if (error != ESP_OK) { status = negative_error(error); goto done; }
@@ -238,4 +243,18 @@ done:
 
 uint32_t sc_network_retry_after_s(void) {
     return last_retry_after;
+}
+
+
+int sc_network_post(const char *payload, char *response, size_t capacity) {
+    size_t length = payload ? strnlen(payload, REQUEST_LIMIT + 1) : 0;
+    if (!length || length > REQUEST_LIMIT) return -ESP_ERR_INVALID_SIZE;
+    return post(endpoint, "application/json", payload, length, response, capacity);
+}
+
+void sc_network_audio(const uint8_t *body, size_t length) {
+    char response[96];
+    if (length <= 96096)
+        post(audio_endpoint, "application/octet-stream", (const char *)body, length,
+             response, sizeof(response));
 }

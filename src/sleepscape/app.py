@@ -1,6 +1,9 @@
 """Private dashboard with selected-date ratings and separately authenticated device uploads."""
 
+import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -8,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
@@ -17,7 +20,7 @@ from sleepscape import __version__
 from sleepscape.config import Settings
 from sleepscape.domain.dashboard_dates import NightBeforeDisplayStart, visible_start
 from sleepscape.domain.morning_feeling import Feeling
-from sleepscape.web.device_security import INGEST_PATH, DeviceGate
+from sleepscape.web.device_security import AUDIO_PATH, INGEST_PATH, DeviceGate
 from sleepscape.web.security import SECURITY_HEADERS, AccessGate
 
 STATIC_DIR = Path(__file__).parent / "web" / "static"
@@ -48,7 +51,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings if settings is not None else Settings()
     gate = AccessGate(settings)
     device_gate = DeviceGate(settings)
+    from sleepscape.storage import event_audio
+
+    async def expire_audio():
+        while True:
+            try:
+                await run_in_threadpool(event_audio.expire, settings.data_dir)
+            except Exception:
+                logging.getLogger("sleepscape").warning("audio_expiry_unavailable")
+            await asyncio.sleep(60)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        cleaner = asyncio.create_task(expire_audio())
+        try:
+            yield
+        finally:
+            cleaner.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleaner
+
     app = FastAPI(
+        lifespan=lifespan,
         title="SleepScape",
         version=__version__,
         # An optional JSON schema is enough for local debugging; CDN-based
@@ -61,7 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def private_read_only_access(request, call_next):
-        if request.method == "POST" and request.url.path == INGEST_PATH:
+        if request.method == "POST" and request.url.path in {INGEST_PATH, AUDIO_PATH}:
             response = await device_gate.check(request)
         else:
             response = await gate.check(request)
@@ -85,6 +109,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from sleepscape.services.views import DashboardService
 
         return DashboardService(settings)
+
+    @app.post(AUDIO_PATH)
+    async def receive_audio(request: Request):
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > event_audio.MAX_BODY:
+                raise HTTPException(413, "audio_too_large")
+            body.extend(chunk)
+        try:
+            await run_in_threadpool(
+                event_audio.stage,
+                settings.data_dir,
+                request.state.environment_device_id,
+                bytes(body),
+                time.time(),
+            )
+        except ValueError:
+            raise HTTPException(422, "audio_rejected") from None
+        except Exception:
+            raise HTTPException(503, "audio_storage_unavailable") from None
+        return {"status": "accepted"}
+
+    @app.get("/api/v1/event-audio/{ref}")
+    def audio(ref: str):
+        from sleepscape.services.event_audio import playback
+
+        value = _query(playback, settings, ref)
+        if value is None:
+            raise HTTPException(404, "audio_unavailable")
+        return Response(value, media_type="audio/wav")
 
     @app.post(INGEST_PATH)
     async def environment_batch(request: Request):
@@ -125,8 +179,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.get("/api/v1/status")
-    def status():
-        return {**_query(service().status), "demo": settings.demo}
+    def status(navigation: bool = False):
+        view = service()
+        return {
+            **_query(view.navigation_status if navigation else view.status),
+            "demo": settings.demo,
+        }
 
     @app.get("/api/v1/metrics")
     def metrics():

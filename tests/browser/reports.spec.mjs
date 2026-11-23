@@ -290,3 +290,27 @@ test("eligible data with automatic generation disabled never promises a schedule
     await expect(panel.locator(".sleep-report")).toContainText("显式分析任务");
     await expect(panel.locator(".readiness-badge")).toHaveText("可分析，有数据缺口");
 });
+
+test("published interpretation is readable while current evidence is still being checked", async ({ page }) => {
+    const value = payload();
+    const summary = value.report.content.summary.text;
+    await page.route(`**/api/v1/nights/${NIGHT}`, async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ json: { ...await response.json(), published_summary: summary } });
+    });
+    let release;
+    const pending = new Promise((resolve) => { release = resolve; });
+    await page.route("**/api/v1/nights/*/analysis", async (route) => {
+        await pending;
+        await route.fulfill({ json: value });
+    });
+    await page.goto(URL);
+    try {
+        await expect(page.locator(PANEL)).toHaveAttribute("aria-busy", "true");
+        await expect(page.locator(PANEL).getByText(summary, { exact: true })).toBeVisible();
+    } finally {
+        release();
+    }
+    await expect(page.locator(PANEL)).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator(PANEL + " .report-observation-group")).toHaveCount(4);
+});

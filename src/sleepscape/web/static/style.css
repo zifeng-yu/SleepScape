@@ -946,6 +946,7 @@ main {
 .event-empty { padding: 20px 0; }
 .event-icon { flex-shrink: 0; }
 .event-main { min-width: 0; overflow-wrap: anywhere; }
+.event summary button { order: 1; flex-shrink: 0; }
 .event-meta { text-align: right; }
 .events-list {
     display: grid;

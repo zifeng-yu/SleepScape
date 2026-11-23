@@ -48,7 +48,7 @@ uv run --locked sleepscape serve
 | `SLEEPSCAPE_HOST` / `SLEEPSCAPE_PORT` | `127.0.0.1` / `8000` |
 | `SLEEPSCAPE_WEB_AUTH_FILE` | 默认不设置；部署使用`.secrets/dashboard-auth.json` |
 | `SLEEPSCAPE_WEB_ALLOWED_HOSTS` | 默认本机域名/IP；远程部署填写实际公网IP或域名的JSON数组 |
-| `SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED` | 默认false；实际HTTPS部署并登记设备后才改true，控制唯一环境POST入口 |
+| `SLEEPSCAPE_ENVIRONMENT_INGEST_ENABLED` | 默认false；实际HTTPS部署并登记设备后才改true，控制设备环境批次和声音事件片段的 HTTPS 上传 |
 | `SLEEPSCAPE_DEBUG_API_DOCS` | 默认false；开启只提供受保护的`/openapi.json`，`/docs`始终关闭 |
 | `SLEEPSCAPE_LLM_ENABLED` | 默认false；启用模型连接，开启本身不发送请求 |
 | `SLEEPSCAPE_LLM_AUTOMATIC_ENABLED` | 默认false；daily-run报告调度开关，当前云端按用户授权启用；不改变GET只读性质 |
@@ -479,7 +479,7 @@ Web单worker、512MiB上限，采集/维护各768MiB、Caddy512MiB均是保护�
 
 授权启动器先核对本机/线上公开参数、Prompt及Schema，并在受控进程用一次性摘要核对URL和Key是否一致，只保存一致性结论。所有调用仍通过`model_runtime`先预留再执行，授权额度仅限本次任务；生产默认上限不变。每例最多一次调用、失败不补调、不在中途修改Prompt；已预留但中断的案例也算消耗，恢复时不能重复调用。429继续尊重冷却。再次开展付费批测需新的明确授权。
 
-本轮输入、授权与逐条安全结果保存于忽略目录`data/reports/model-batch/`，汇总入口为`data/reports/model-batch-latest.json`。结果分别记录JSON解析、模型Schema、完整业务校验；只有完整通过才代表这次返回满足项目发布规则。Schema失败不能冒充已执行后续业务检查。usage只汇总可获得的值，未知失败消耗未计入，不等于总费用。批测不写睡眠数据库，也不发布合成报告；不保存原始失败响应或正文。
+本轮输入、授权与逐条安全结果保存于忽略目录`data/reports/model-batch/`，汇总入口为`data/reports/model-batch/summary.json`。结果分别记录JSON解析、模型Schema、完整业务校验；只有完整通过才代表这次返回满足项目发布规则。Schema失败不能冒充已执行后续业务检查。usage只汇总可获得的值，未知失败消耗未计入，不等于总费用。批测不写睡眠数据库，也不发布合成报告；不保存原始失败响应或正文。
 
 ## 回归、构建与清理
 
@@ -550,7 +550,7 @@ make firmware-first-flash PORT=/dev/cu.实际串口
 make firmware-status PORT=/dev/cu.实际串口
 ```
 
-当前源码版本为`0.3.0`。新安装后应有`status=ready`、对应固件版本和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只查询状态，不显示Wi-Fi或令牌；`configured`表示网络配置是否有效，不表示USB本地采集是否正在运行。后续可选择本地USB采集，或完成网络配置后验收Wi-Fi上传。
+当前源码版本为 `0.4.0`，样机上次核验为 `0.3.0`。现有样机升级见[声音事件回听升级](#声音事件回听升级)。新安装后应有`status=ready`、对应固件版本和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只查询状态，不显示Wi-Fi或令牌；`configured`表示网络配置是否有效，不表示USB本地采集是否正在运行。后续可选择本地USB采集，或完成网络配置后验收Wi-Fi上传。
 
 当前工具还显示固件提供的`collection_mode`：`idle`表示空闲、`usb`表示USB采集模式，另有`starting/cloud/failed`。联网模式不等于上传已成功，仍须核对接收结果；旧响应缺该字段时不猜测模式。
 
@@ -568,7 +568,7 @@ make firmware-flash PORT=/dev/cu.实际串口
 
 ## USB本机采集
 
-这条路径适合尚未配置网络时先验证传感器、接线和入库：传感器→主控→现有USB数据线→Mac→同一SQLite环境表。无需家中Wi-Fi、HTTPS域名、云服务器或设备令牌；无需另购附件。需要固件`0.3.0`；版本已满足时不重新刷写。已有有效网络配置的设备会拒绝USB采集，当前未提供无损切回命令，不能用整片清除绕过。
+这条路径适合尚未配置网络时先验证传感器、接线和入库：传感器→主控→现有USB数据线→Mac→同一SQLite环境表。无需家中Wi-Fi、HTTPS域名、云服务器或设备令牌；无需另购附件。USB 统计采集支持固件 `0.3.0` 和 `0.4.0`，测量档案须与实际设备版本一致。已有有效网络配置的设备会拒绝USB采集，当前未提供无损切回命令，不能用整片清除绕过。
 
 连接硬件并确认实际串口后，从项目根目录运行：
 
@@ -733,7 +733,11 @@ uv run --locked sleepscape environment-status
 4. 电源对照能缩小故障范围，不能凭某一次变化就认定某件损坏；USB插接、线材、供电路径及接线稳定性仍可能影响结果。保留异常和正常两组记录，不用后一次正常覆盖前一次失败，也不以零丢失计数代替传感器有效覆盖。
 5. 移动电源短采通过只证明该时间段能运行，不代表整夜续航或长期插电方案已验收；后续需要稳定独立电源下的整夜覆盖和断电/重连验收。
 
-普通NVS不提供抗物理读取保证；任何流程都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。
+普通NVS不提供抗物理读取保证；USB及统计队列都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。
 当前USB通信、首次刷写、四通道短采与真实Wi-Fi/HTTPS链路已通过；Mac及移动电源供电对照均完成连续两个正常上传周期，启动后四通道有效计数完整、未见I²C bus_error，首分钟暖机及声音启动缺口保留。当前以移动电源在原位独立采集，Mac无需保持连接。
 
 原充电头供电路径及插接检查后的复验曾出现通信缺测，具体原因未定，未证明某件损坏；该路径暂不作为正式供电。下一步确认另一只合适的5V、至少1A USB充电头，在原位保持传感器线不动进行独立运行验收；仅换USB供电来源无需改profile或再次configure，以私有供电记录和新boot区分。移动电源的整夜续航和长期插电方式、受控响应、准确度、8小时并发采样、三晚覆盖、48小时离线补传和随机掉电仍待实测。核验报告区分软件回归、短时实物与长期通过。
+
+## 声音事件回听升级
+
+设备接入 USB 后，先用 `make firmware-status PORT=实际串口` 核对身份和现有固件。按本手册已有的 profile 登记与 configure 流程，以原摆位、设备 ID 和当前测量参数为基础，在云端新增 firmware_version 为 0.4.0 的不可变 profile。使用普通 `make firmware-flash PORT=实际串口` 后配置该 profile，保留既有有效设备凭据、Wi-Fi 和离线观测队列。不要执行首次整片擦除。确认新 boot 的四通道持续上云，并在夜间事件、次日同步及裁剪后登录夜晚详情试听。旧固件和历史摘要没有可回听片段。

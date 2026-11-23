@@ -16,6 +16,7 @@
 #include "sc_aggregate.h"
 #include "sc_board.h"
 #include "sc_config.h"
+#include "sc_clip.h"
 #include "sc_local.h"
 #include "sc_network.h"
 #include "sc_queue.h"
@@ -25,11 +26,13 @@
 #include "esp_system.h"
 #include "driver/uart.h"
 
-/* PCM exists only in the DMA buffers and audio task stack. Never queue PCM. */
+/* PCM stays in DMA and the audio task. Event excerpts use bounded RAM only. */
 typedef enum { MSG_SOUND, MSG_SENSOR, MSG_ANCHOR } message_type_t;
 typedef struct {
     message_type_t type;
     uint64_t slot_ms;
+    uint8_t *clip_second;
+    int64_t clip_utc;
     union {
         sc_audio_second_t sound;
         struct { bool light_ok, aht_attempt, aht_ok; float lux, temperature, humidity;
@@ -142,7 +145,12 @@ static void collect_task(void *unused) {
             append_record(SC_RECORD_ANCHOR, bytes, length);
             xSemaphoreGive(journal_lock);
         } else if (message.type == MSG_SOUND) {
-            sc_aggregate_audio(&aggregate, message.slot_ms, &message.value.sound);
+            bool accepted = sc_aggregate_audio(&aggregate, message.slot_ms, &message.value.sound);
+            const sc_events_t *detector = &aggregate.detector;
+            bool active = accepted && detector->pending_count &&
+                detector->pending[detector->pending_count - 1].event;
+            sc_clip_accept(current_source.boot_id, message.slot_ms, message.clip_utc,
+                           active && message.value.sound.complete, message.clip_second);
         } else {
             sc_aggregate_sensor(&aggregate, message.slot_ms,
                 message.value.sensor.light_ok, message.value.sensor.lux,
@@ -169,15 +177,18 @@ static void sensor_task(void *unused) {
         if (xQueueSend(observations, &message, 0) != pdTRUE) ++observation_drops;
     }
 }
-static void send_sound(uint64_t slot, sc_pcm_t *pcm) {
+static void send_sound(uint64_t slot, sc_pcm_t *pcm, uint8_t *second, int64_t utc) {
     observation_t message = {.type = MSG_SOUND, .slot_ms = slot,
-        .value.sound = sc_pcm_finish(pcm)};
-    if (xQueueSend(observations, &message, 0) != pdTRUE) ++observation_drops;
+        .value.sound = sc_pcm_finish(pcm), .clip_second = second, .clip_utc = utc};
+    if (xQueueSend(observations, &message, 0) != pdTRUE) { free(second); ++observation_drops; }
 }
 static void audio_task(void *unused) {
     (void)unused;
     int16_t samples[256];
     sc_pcm_t pcm; sc_pcm_reset(&pcm);
+    uint8_t *second = NULL;
+    int16_t previous_sample = 0;
+    int64_t clip_utc = 0;
     bool aligning = true;
     uint64_t slot = (monotonic_ms() / 1000 + 1) * 1000;
     uint32_t overflow_before = sc_board_audio_overflows();
@@ -202,11 +213,23 @@ static void audio_task(void *unused) {
         while (offset < count) {
             size_t take = SC_SAMPLE_RATE - pcm.observed_samples;
             if (take > count - offset) take = count - offset;
+            if (!pcm.observed_samples) {
+                clip_utc = sc_clip_clock(slot);
+                second = clip_utc ? sc_clip_second() : NULL;
+            }
+            if (second) {
+                for (size_t i = 0; i < take; ++i) {
+                    size_t pos = pcm.observed_samples + i;
+                    int16_t sample = samples[offset+i];
+                    if ((pos & 1) == 0) previous_sample = sample;
+                    else second[pos/2] = sc_clip_encode(((int)previous_sample+sample)/2);
+                }
+            }
             sc_pcm_add(&pcm, samples + offset, take); offset += take;
             if (pcm.observed_samples == SC_SAMPLE_RATE) {
                 bool late = now > slot + 1250 || now + 250 < slot + 1000;
                 if (late) sc_pcm_gap(&pcm, 0);
-                send_sound(slot, &pcm); sc_pcm_reset(&pcm); slot += 1000;
+                send_sound(slot, &pcm, second, clip_utc); second = NULL; sc_pcm_reset(&pcm); slot += 1000;
                 if (late) {
                     slot = (now / 1000 + 1) * 1000;
                     aligning = true; break;
@@ -215,7 +238,7 @@ static void audio_task(void *unused) {
         }
         memset(samples, 0, sizeof(samples));
         if (!count && now >= slot + 1200) {
-            sc_pcm_gap(&pcm, 0); send_sound(slot, &pcm); sc_pcm_reset(&pcm);
+            sc_pcm_gap(&pcm, 0); send_sound(slot, &pcm, second, clip_utc); second = NULL; sc_pcm_reset(&pcm);
             slot = (now / 1000 + 1) * 1000; aligning = true;
         }
         if (!count) vTaskDelay(pdMS_TO_TICKS(10));
@@ -228,6 +251,7 @@ static void upload_task(void *unused) {
     uint32_t backoff = 5;
     bool isolate = false;
     for (;;) {
+        sc_clip_upload();
         if (!sc_network_ready()) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
         size_t count = 0;
         xSemaphoreTake(journal_lock, portMAX_DELAY);
@@ -244,7 +268,7 @@ static void upload_task(void *unused) {
         }
         if (!count && journal.queued_records) fail("journal_read_or_identity_needs_attention");
         xSemaphoreGive(journal_lock);
-        if (!count) { isolate = false; vTaskDelay(pdMS_TO_TICKS(300000)); continue; }
+        if (!count) { isolate = false; vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
         char *payload = sc_wire_batch(batch, count);
         if (!payload) { fail("batch_encoding_failed"); vTaskDelay(pdMS_TO_TICKS(30000)); continue; }
         int status = sc_network_post(payload, response, sizeof(response));

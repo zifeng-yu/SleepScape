@@ -42,6 +42,12 @@ Quality = Annotated[list[QualityCode], Field(max_length=16)]
 State = Literal["available", "partial", "missing", "invalid", "unavailable", "warming"]
 
 
+def environment_ref(kind: str, *identity: str) -> str:
+    # Public references remain stable across reads/backups but contain no source identifiers.
+    digest = hashlib.sha256("\0".join((kind, *identity)).encode()).hexdigest()[:24]
+    return f"{kind}-{digest}"
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
@@ -419,7 +425,11 @@ class MeasurementProfile(Contract):
 
     @model_validator(mode="after")
     def explicit_sensor_configuration(self):
-        if self.hardware_model == "m5stack-c008-c" and self.firmware_version in {"0.2.0", "0.3.0"}:
+        if self.hardware_model == "m5stack-c008-c" and self.firmware_version in {
+            "0.2.0",
+            "0.3.0",
+            "0.4.0",
+        }:
             if (
                 self.light_sensor != "dfrobot-sen0228-veml7700"
                 or self.temperature_sensor != "dfrobot-sen0528-aht20"

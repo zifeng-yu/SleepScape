@@ -156,3 +156,35 @@ test("unavailable sound data does not masquerade as zero summaries", async ({ pa
     await expect(panel.locator(".event-empty")).toContainText("不能判断摘要条数");
     await expect(panel.getByRole("button", { name: "声音摘要 0", exact: true })).toHaveCount(0);
 });
+
+test("sound playback requests only a published clip and only after a click", async ({ page }) => {
+    const key = "record-" + "a".repeat(24);
+    await page.route(`**/api/v1/nights/${NIGHT}/timeline?**`, async (route) => {
+        const payload = await (await route.fetch()).json();
+        const event = payload.events.find((item) => item.type === "environment_sound");
+        payload.events = [{ ...event, key, audio_available: true }, { ...event, audio_available: false }];
+        await route.fulfill({ json: payload });
+    });
+    let requests = 0;
+    await page.route(`**/api/v1/event-audio/${key}`, async (route) => {
+        requests++;
+        // Three seconds of synthetic silence in a standard mono PCM WAV.
+        const wav = Buffer.alloc(48044);
+        wav.write("RIFF"); wav.writeUInt32LE(wav.length - 8, 4);
+        wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16);
+        wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+        wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28);
+        wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+        wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
+        await route.fulfill({ contentType: "audio/wav", body: wav });
+    });
+    await open(page);
+    const player = page.locator("#events-panel button", { hasText: /^播放$/ });
+    await expect(player).toHaveCount(1);
+    expect(requests).toBe(0);
+    await player.click();
+    await expect(page.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
+    expect(requests).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "暂停", exact: true }).click();
+    await expect(player).toBeVisible();
+});

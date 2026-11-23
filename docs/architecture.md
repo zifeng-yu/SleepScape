@@ -81,7 +81,8 @@ Garmin官方API → adapters → services：采集/核验
 | `storage/` | Garmin事实/审计、环境设备/配置/记录/锚点、事务ACK、独立只读查询及模型安全运行元数据 | 只负责数据持久化与有界读取，不调用Garmin或模型 |
 | `services/` | 采集/同步、环境接收与设备管理、核验、白名单视图、备份、模型核验与受限调用编排 | 组装适配/领域/存储；模型外呼不持SQLite事务或Garmin锁 |
 | `cli.py` | 参数校验、选择用例、安全摘要输出 | 不复制归一化或指标公式，不输出凭据和测量正文 |
-| `app.py`、`web/security.py`、`web/device_security.py` | 浏览器Host/密码边界；唯一环境POST路径的设备认证、HTTPS、限流和大小限制 | GET不触发采集或模型调用；设备POST不使用看板密码或Garmin凭据 |
+| `services/event_audio.py`、`storage/event_audio.py` | 独立私有库接收事件片段，日任务按 Garmin 睡眠窗口裁剪；播放时重新核对窗口 | 音频随保留期限清理，排除在主库备份和模型证据之外 |
+| `app.py`、`web/security.py`、`web/device_security.py` | 浏览器Host/密码边界；环境批次与事件音频各自精确 POST 路径的设备认证、HTTPS、限流和大小限制 | GET不触发采集或模型调用；设备POST不使用看板密码或Garmin凭据 |
 | `web/static/` | 原生HTML/CSS/JavaScript页面、请求、格式化、图表及分析状态模块 | 不持有Garmin或模型凭据；无CDN、外部字体或浏览器持久化健康数据 |
 | `firmware/components/sc_core/` | 音频统计、分钟聚合、事件、时间锚点和CRC分段队列 | 可在主机测试，不依赖Wi-Fi或服务器实现 |
 | `firmware/main/` | 板卡驱动、共享I²C总线、NVS/USB配置、采集调度、USB/HTTPS与JSON/ACK桥接 | 两种传输复用驱动/聚合/队列且互斥；不上报PCM，不读取Garmin |
