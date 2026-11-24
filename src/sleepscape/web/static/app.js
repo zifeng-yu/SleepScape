@@ -20,7 +20,7 @@ import {
 import { TimelineChart } from "./timeline.js";
 import { configureMetrics, validSeriesID, defaultVisible, metricColor, registeredSeries } from "./metrics.js";
 import { environmentPanel, environmentStatusPanel } from "./environment.js";
-import { eventsPanel as renderEventsPanel, revealEvent } from "./events.js";
+import { disposeEventAudio, eventsPanel as renderEventsPanel, revealEvent } from "./events.js";
 import { dailyStatusPanel } from "./daily.js";
 import { reportSummary } from "./report.js";
 import { maintenanceStatusPanel } from "./maintenance.js";
@@ -120,7 +120,7 @@ function notice(message = "", error = false) {
     node.classList.toggle("error", error);
 }
 function loading() {
-    for (const audio of content.querySelectorAll("audio")) audio.pause();
+    disposeEventAudio($("#events-panel"));
     state.chart?.destroy();
     state.chart = null;
     const grid = el("div", "skeleton-grid");
@@ -916,7 +916,7 @@ async function loadTimeline() {
         const unique = [
             ...new Map(events.map((event) => [event.key, event])).values(),
         ];
-        for (const audio of content.querySelectorAll("#events-panel audio")) audio.pause();
+        disposeEventAudio($("#events-panel"));
         $("#events-panel")?.replaceWith(eventsPanel(unique));
     } catch (error) {
         if (

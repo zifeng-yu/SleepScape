@@ -158,6 +158,17 @@ test("unavailable sound data does not masquerade as zero summaries", async ({ pa
 });
 
 test("sound playback requests only a published clip and only after a click", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 760 });
+    await page.addInitScript(() => {
+        const connect = AudioNode.prototype.connect;
+        AudioNode.prototype.connect = function (...args) {
+            if (this instanceof MediaElementAudioSourceNode) {
+                window.clipOutput = args[0];
+                window.clipContext = this.context;
+            }
+            return connect.apply(this, args);
+        };
+    });
     const key = "record-" + "a".repeat(24);
     await page.route(`**/api/v1/nights/${NIGHT}/timeline?**`, async (route) => {
         const payload = await (await route.fetch()).json();
@@ -168,23 +179,62 @@ test("sound playback requests only a published clip and only after a click", asy
     let requests = 0;
     await page.route(`**/api/v1/event-audio/${key}`, async (route) => {
         requests++;
-        // Three seconds of synthetic silence in a standard mono PCM WAV.
-        const wav = Buffer.alloc(48044);
+        // An 8 kHz mono WAV with low rumble and a higher reference tone.
+        const wav = Buffer.alloc(44 + 8 * 8000 * 2);
         wav.write("RIFF"); wav.writeUInt32LE(wav.length - 8, 4);
         wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16);
         wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
         wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(16000, 28);
         wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
         wav.write("data", 36); wav.writeUInt32LE(wav.length - 44, 40);
+        for (let i = 0; i < (wav.length - 44) / 2; i++) {
+            const phase = 2 * Math.PI * i / 8000;
+            wav.writeInt16LE(Math.round(4000 * (Math.sin(20 * phase) + Math.sin(1000 * phase))), 44 + i * 2);
+        }
         await route.fulfill({ contentType: "audio/wav", body: wav });
     });
     await open(page);
     const player = page.locator("#events-panel button", { hasText: /^播放$/ });
     await expect(player).toHaveCount(1);
+    const mode = page.getByRole("combobox", { name: "回听模式" });
+    const audio = page.locator("#events-panel audio");
+    await expect(mode).toHaveCount(1);
+    await expect(mode).toHaveValue("original");
+    await mode.selectOption("filtered");
+    await mode.selectOption("original");
     expect(requests).toBe(0);
     await player.click();
-    await expect(page.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
-    expect(requests).toBeGreaterThan(0);
-    await page.getByRole("button", { name: "暂停", exact: true }).click();
+    const pause = page.getByRole("button", { name: "暂停", exact: true });
+    await expect(pause).toBeVisible();
+    await expect.poll(() => audio.evaluate(a => a.currentTime)).toBeGreaterThan(0.3);
+    const position = await audio.evaluate(a => a.currentTime);
+    const initialRequests = requests;
+    expect(initialRequests).toBeGreaterThan(0);
+    await mode.selectOption("filtered");
+    await expect.poll(() => page.evaluate(() => window.clipOutput?.type)).toBe("highpass");
+    const gains = await page.evaluate(() => {
+        const magnitude = new Float32Array(3);
+        window.clipOutput.getFrequencyResponse(new Float32Array([20, 80, 1000]), magnitude, new Float32Array(3));
+        return Array.from(magnitude);
+    });
+    expect(gains[0]).toBeLessThan(0.07);
+    expect(gains[1]).toBeCloseTo(Math.SQRT1_2, 2);
+    expect(gains[2]).toBeCloseTo(1, 2);
+    await mode.selectOption("original");
+    await expect.poll(() => page.evaluate(() => window.clipOutput === window.clipContext.destination)).toBe(true);
+    await expect(pause).toBeVisible();
+    expect(await audio.evaluate(a => a.currentTime)).toBeGreaterThan(position);
+    await pause.click();
     await expect(player).toBeVisible();
+    const paused = await audio.evaluate(a => a.currentTime);
+    await mode.selectOption("filtered");
+    expect(await audio.evaluate(a => a.paused)).toBe(true);
+    expect(await audio.evaluate(a => a.currentTime)).toBe(paused);
+    await player.click();
+    await expect(pause).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.clipOutput?.type)).toBe("highpass");
+    expect(requests).toBe(initialRequests);
+    expect(await page.locator("#events-panel").evaluate(p => p.scrollWidth <= p.clientWidth)).toBe(true);
+    await page.locator('[data-event-filter="activity"]').click();
+    await expect.poll(() => audio.evaluate(a => a.paused)).toBe(true);
 });

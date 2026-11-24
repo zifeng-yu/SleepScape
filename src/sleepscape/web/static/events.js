@@ -8,6 +8,97 @@ const TYPES = [
     ["environment_sound", "声音摘要"],
 ];
 
+// A panel shares one output device. Original playback uses the native media
+// element until the listener first enables the filter on that clip.
+const contexts = new WeakMap();
+
+function disposeEventAudio(panel) {
+    if (!panel) return;
+    for (const audio of panel.querySelectorAll("audio")) audio.pause();
+    const context = contexts.get(panel);
+    if (context) {
+        contexts.delete(panel);
+        void context.close();
+    }
+}
+
+function clipControls(key) {
+    const controls = el("span", "clip-controls");
+    const audio = el("audio");
+    audio.preload = "none";
+    audio.src = `/api/v1/event-audio/${key}`;
+    const mode = el("select");
+    mode.setAttribute("aria-label", "回听模式");
+    mode.add(new Option("原声", "original"));
+    mode.add(new Option("减弱低频", "filtered"));
+    const AudioEngine = window.AudioContext || window.webkitAudioContext;
+    mode.disabled = !AudioEngine;
+    if (mode.disabled) mode.title = "当前浏览器仅支持原声";
+    let source;
+    let filter;
+    function connect(context) {
+        if (!source) {
+            filter = context.createBiquadFilter();
+            filter.type = "highpass";
+            filter.frequency.value = 80;
+            // Web Audio expresses Q in dB for highpass. Butterworth Q is 1/√2.
+            filter.Q.value = 20 * Math.log10(Math.SQRT1_2);
+            filter.connect(context.destination);
+            source = context.createMediaElementSource(audio);
+        }
+        source.disconnect();
+        source.connect(mode.value === "filtered" ? filter : context.destination);
+    }
+    async function applyMode() {
+        if (!source && mode.value === "original") return;
+        const panel = controls.closest("#events-panel");
+        if (!panel) return;
+        try {
+            let context = contexts.get(panel);
+            if (!context) {
+                context = new AudioEngine();
+                contexts.set(panel, context);
+            }
+            if (context.state !== "running") await context.resume();
+            if (contexts.get(panel) === context && (source || mode.value === "filtered"))
+                connect(context);
+        } catch {
+            if (!panel.isConnected) return;
+            mode.value = "original";
+            mode.disabled = true;
+            mode.title = "低频处理不可用";
+            if (source) {
+                source.disconnect();
+                source.connect(source.context.destination);
+                if (source.context.state !== "running") {
+                    audio.pause();
+                    play.textContent = "无法播放";
+                }
+            }
+        }
+    }
+    mode.addEventListener("change", () => {
+        if (!audio.paused) void applyMode();
+    });
+    controls.addEventListener("click", (event) => event.stopPropagation());
+    const play = button("播放", async (click) => {
+        click.preventDefault();
+        if (!audio.paused) { audio.pause(); return; }
+        for (const other of controls.closest(".events-list").querySelectorAll("audio")) {
+            if (other !== audio) other.pause();
+        }
+        try {
+            await Promise.all([applyMode(), audio.play()]);
+        } catch (error) {
+            if (error.name !== "AbortError") play.textContent = "无法播放";
+        }
+    });
+    audio.addEventListener("playing", () => { play.textContent = "暂停"; });
+    audio.addEventListener("pause", () => { play.textContent = "播放"; });
+    audio.addEventListener("ended", () => { play.textContent = "播放"; });
+    return add(controls, play, mode, audio);
+}
+
 function eventDetails(event, { time, timeline, onLocate }) {
     const sound = event.type === "environment_sound";
     const detail = el("details", "event");
@@ -24,24 +115,7 @@ function eventDetails(event, { time, timeline, onLocate }) {
             ? `较响累计 ${numericText(metrics.active_duration_ms / 1000, 1)}秒`
             : duration(metrics.duration_seconds)));
     if (sound && event.audio_available === true && /^record-[0-9a-f]{24}$/.test(event.key)) {
-        const audio = el("audio");
-        audio.preload = "none";
-        audio.src = `/api/v1/event-audio/${event.key}`;
-        const play = button("播放", async (click) => {
-            click.preventDefault();
-            click.stopPropagation();
-            if (!audio.paused) { audio.pause(); return; }
-            for (const other of detail.closest(".events-list")?.querySelectorAll("audio") || []) {
-                if (other !== audio) other.pause();
-            }
-            try { await audio.play(); } catch (error) {
-                if (error.name !== "AbortError") play.textContent = "无法播放";
-            }
-        });
-        audio.addEventListener("playing", () => { play.textContent = "暂停"; });
-        audio.addEventListener("pause", () => { play.textContent = "播放"; });
-        audio.addEventListener("ended", () => { play.textContent = "播放"; });
-        summary.append(play, audio);
+        summary.append(clipControls(event.key));
     }
     const body = el("div", "event-detail");
     if (event.type === "activity") add(body,
@@ -134,4 +208,4 @@ function revealEvent(panel, key) {
     }
 }
 
-export { eventsPanel, revealEvent };
+export { disposeEventAudio, eventsPanel, revealEvent };

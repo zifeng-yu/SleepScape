@@ -946,7 +946,8 @@ main {
 .event-empty { padding: 20px 0; }
 .event-icon { flex-shrink: 0; }
 .event-main { min-width: 0; overflow-wrap: anywhere; }
-.event summary button { order: 1; flex-shrink: 0; }
+.clip-controls { display: inline-flex; align-items: center; gap: 6px; }
+.clip-controls select { padding: 8px 4px; color: var(--ink); background: white; border: 1px solid var(--line); border-radius: 8px; }
 .event-meta { text-align: right; }
 .events-list {
     display: grid;
@@ -2159,4 +2160,9 @@ main {
     margin: 0 0 6px;
     font-size: 13px;
     color: var(--muted);
+}
+
+@media (max-width: 600px) {
+    .event summary:has(.clip-controls) { flex-wrap: wrap; }
+    .clip-controls { order: 1; width: 100%; padding-left: 42px; }
 }
