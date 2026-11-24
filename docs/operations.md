@@ -391,6 +391,8 @@ sudo -u sleepscape env PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c 'from sleep
 
 预检成功后才重启`sleepscape.service`并检查本机健康端点、受保护API和公网HTTPS。预检失败时先修复公开包权限或回退至已核验程序，不让服务反复失败。此前一次发布因root的`umask 077`生成仅root可读的包目录/文件导致服务用户无法导入，已回退修复；本节流程用于避免复发，具体证据见核验报告。
 
+同步源码和文档时，以开发机 Git 跟踪文件为清单，在临时目录准备待发布文件。先比对云端差异，确认来自已知历史版本，再按清单更新。分别核对生产工作目录内的文件与可执行位、服务账号实际导入的包内全部资源及构建时加入的模型默认配置。仅更新 wheel 不会同步工作目录。私有配置、数据库、报告、录音与备份沿用各自实例的内容。
+
 权限调整只限公开程序、解释器和依赖目录，不对`/opt/sleepscape`整体执行递归放宽权限。`.env`、凭据及实际私有文件继续600，私有目录700；运行服务的`UMask=0077`保持不变，不因安装使用022而降低数据保护。
 
 后续也可在本项目完整源码目录使用常规`uv sync --locked --no-dev --no-editable --python /opt/sleepscape-tools/python/cpython-3.12.10-linux-x86_64-gnu/bin/python3.12`进行部署更新，使用上述专用uv的完整路径；安装子进程同样限定`umask 022`并完成服务用户预检。它会按锁文件同步环境并重新安装本项目，须作为显式发布执行；保留`--no-editable`才能维持当前生产安装方式。不得省略`--locked`偷偷更新依赖，也不要把sync放入服务启动或定时任务。更新前先备份并停止本项目写入和Web服务，更新后重新验证再启动；不得停止其他站点或覆盖其目录。
@@ -407,7 +409,7 @@ sudo -u sleepscape env PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -c 'from sleep
 
 **独立Caddy和公网IP证书。** 使用Caddy2.11.9官方Linux amd64发布包，先与同版本官方SHA-512清单核对，再把二进制安装为root拥有的`/usr/local/bin/caddy`；不得运行未校验的临时下载程序。版本与发布入口为[Caddy官方release](https://github.com/caddyserver/caddy/releases/tag/v2.11.9)，日后升级要重新核验版本、清单和IP签发能力。它使用专用`caddy-sleepscape.service`，不替换系统`caddy.service`或Nginx。
 
-首次部署创建专用配置目录，已有`site.env`只编辑，不覆盖：
+首次部署创建专用配置目录。当前生产 Caddy 同时承载其他站点，应用发布保留其路由和导入；下列单站示例只用于首次安装。已有 `site.env` 只编辑，不覆盖。
 
 ```sh
 getent passwd caddy || sudo useradd --system --user-group --home-dir /var/lib/caddy-sleepscape --shell /usr/sbin/nologin caddy
@@ -415,7 +417,7 @@ sudo install -d -o root -g caddy -m 750 /etc/caddy-sleepscape
 sudo install -d -o caddy -g caddy -m 700 /var/lib/caddy-sleepscape
 sudo test -e /etc/caddy-sleepscape/site.env || sudo install -o root -g caddy -m 640 /dev/null /etc/caddy-sleepscape/site.env
 sudoedit /etc/caddy-sleepscape/site.env
-sudo install -o root -g caddy -m 640 deploy/Caddyfile.example /etc/caddy-sleepscape/Caddyfile
+sudo test -e /etc/caddy-sleepscape/Caddyfile || sudo install -o root -g caddy -m 640 deploy/Caddyfile.example /etc/caddy-sleepscape/Caddyfile
 sudo install -m 644 deploy/caddy-sleepscape.service /etc/systemd/system/caddy-sleepscape.service
 ```
 
@@ -503,7 +505,7 @@ make clean-dev
 ## 硬件构建与检查
 
 先阅读[采购清单](procurement.md)与[接线方案](plans/hardware.md)。以下入口已经实现；采购前软件验证、接线照片核对、主控芯片/Flash识别、首次刷写与USB状态检查的证据见[核验报告](verification.md)。
-云端HTTPS和设备接收已部署，真实设备令牌已私下保存至Mac的`.secrets/environment-cloud-token.json`。当前样机已通过USB configure保存真实2.4GHz Wi-Fi、HTTPS和设备令牌，床头档案已写入，Mac及移动电源供电下四通道连续上传短验通过，当前移动电源独立采集。原充电头供电路径曾有I²C缺测，具体原因未定，暂不用于正式供电；常驻电源与长期验收另行完成。本机USB新记录不会自动同步云端；下文USB采集仅适用于未配置网络的设备，当前联网样机没有无损切回USB采集的命令。各路径的实测进度见核验报告。
+云端HTTPS和设备接收已部署，真实设备令牌已私下保存至Mac的`.secrets/environment-cloud-token.json`。当前样机已通过USB configure保存真实2.4GHz Wi-Fi、HTTPS和设备令牌，床头档案已写入，Mac及移动电源供电下四通道连续上传短验通过，曾使用移动电源独立采集，最近一次升级使用 Mac USB 供电。原充电头供电路径曾有I²C缺测，具体原因未定，暂不用于正式供电；常驻电源与长期验收另行完成。本机USB新记录不会自动同步云端；下文USB采集仅适用于未配置网络的设备，当前联网样机没有无损切回USB采集的命令。各路径的实测进度见核验报告。
 
 在开发电脑仓库运行；服务器不需要ESP-IDF。Mac还需Apple命令行开发工具提供Git/clang；若提示未安装，先运行`xcode-select --install`并完成系统安装界面。项目脚本不代替这一系统步骤：
 
@@ -550,7 +552,7 @@ make firmware-first-flash PORT=/dev/cu.实际串口
 make firmware-status PORT=/dev/cu.实际串口
 ```
 
-当前源码版本为 `0.4.0`，样机上次核验为 `0.3.0`。现有样机升级见[声音事件回听升级](#声音事件回听升级)。新安装后应有`status=ready`、对应固件版本和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只查询状态，不显示Wi-Fi或令牌；`configured`表示网络配置是否有效，不表示USB本地采集是否正在运行。后续可选择本地USB采集，或完成网络配置后验收Wi-Fi上传。
+当前源码与样机已核验的版本均为 `0.4.0`。现有样机升级见[声音事件回听升级](#声音事件回听升级)。新安装后应有`status=ready`、对应固件版本和`configured=false`；若版本不符，先核对构建与刷写结果。该命令只查询状态，不显示Wi-Fi或令牌；`configured`表示网络配置是否有效，不表示USB本地采集是否正在运行。后续可选择本地USB采集，或完成网络配置后验收Wi-Fi上传。
 
 当前工具还显示固件提供的`collection_mode`：`idle`表示空闲、`usb`表示USB采集模式，另有`starting/cloud/failed`。联网模式不等于上传已成功，仍须核对接收结果；旧响应缺该字段时不猜测模式。
 
@@ -734,7 +736,7 @@ uv run --locked sleepscape environment-status
 5. 移动电源短采通过只证明该时间段能运行，不代表整夜续航或长期插电方案已验收；后续需要稳定独立电源下的整夜覆盖和断电/重连验收。
 
 普通NVS不提供抗物理读取保证；USB及统计队列都不保存或上传PCM录音。断电期间不能采样，未完成/未提交窗口可能丢失。
-当前USB通信、首次刷写、四通道短采与真实Wi-Fi/HTTPS链路已通过；Mac及移动电源供电对照均完成连续两个正常上传周期，启动后四通道有效计数完整、未见I²C bus_error，首分钟暖机及声音启动缺口保留。当前以移动电源在原位独立采集，Mac无需保持连接。
+当前USB通信、首次刷写、四通道短采与真实Wi-Fi/HTTPS链路已通过；Mac及移动电源供电对照均完成连续两个正常上传周期，启动后四通道有效计数完整、未见I²C bus_error，首分钟暖机及声音启动缺口保留。原位使用已核验的独立电源采集时，Mac 无需保持连接。
 
 原充电头供电路径及插接检查后的复验曾出现通信缺测，具体原因未定，未证明某件损坏；该路径暂不作为正式供电。下一步确认另一只合适的5V、至少1A USB充电头，在原位保持传感器线不动进行独立运行验收；仅换USB供电来源无需改profile或再次configure，以私有供电记录和新boot区分。移动电源的整夜续航和长期插电方式、受控响应、准确度、8小时并发采样、三晚覆盖、48小时离线补传和随机掉电仍待实测。核验报告区分软件回归、短时实物与长期通过。
 

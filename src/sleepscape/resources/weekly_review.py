@@ -11,7 +11,11 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
-from sleepscape.domain.sleep_features import canonical_json, report_text_is_safe
+from sleepscape.domain.sleep_features import (
+    canonical_json,
+    opens_with_collection_status,
+    report_text_is_safe,
+)
 from sleepscape.domain.weekly_review import METRIC_UNITS
 from sleepscape.models.base import ChatMessage, ModelError, ModelRequest
 from sleepscape.models.openai_compatible import MAX_MESSAGE_BYTES, strict_json
@@ -97,8 +101,9 @@ def request_for(value, *, correction=False):
     instructions = prompt + "\n\n" + canonical_json(output)
     if correction:
         instructions += (
-            "\n上次输出未通过校验。本次只写一条观察，hypotheses和actions都填[]。"
-            "summary与该条观察分别只引用一至三个直接且有效的证据ID。"
+            "\n上次输出未通过校验。只保留主要发现和一条有直接证据的观察，hypotheses 填 []。"
+            "actions 有依据时保留一条，写清试什么或记录什么、如何对照，否则填 []。"
+            "每条仅引用一至三个直接有效的 ID，摘要须有睡眠证据。"
             "输出规定的四字段JSON对象，正文不要写数字或推断因果。"
         )
     if len(encoded.encode()) > MAX_EVIDENCE_BYTES:
@@ -179,4 +184,15 @@ def _metric_comparable(rows, selected=None):
 
 
 def parse_output(raw, evidence):
-    return validate_output(strict_json(raw), evidence)
+    report = validate_output(strict_json(raw), evidence)
+    summary = report["summary"]
+    # Each comparison contrasts nights with poor vs good self-reported sleep.
+    sleep_ids = set(evidence["examples"]) | {row["id"] for row in evidence["comparisons"]}
+    sleep_ids.update(
+        row["id"] for row in evidence["aggregates"] if row["metric"].startswith("sleep_")
+    )
+    if not sleep_ids.intersection(summary["evidence_ids"]) or opens_with_collection_status(
+        summary["text"]
+    ):
+        raise ModelError("output_business_mismatch")
+    return report

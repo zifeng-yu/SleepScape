@@ -119,12 +119,29 @@ def test_small_model_contract_has_only_authored_fields_and_short_prompt():
     assert schema["type"] == "object" and schema["additionalProperties"] is False
     assert len(canonical_json(schema).encode()) < 2200
     assert len(system_prompt().encode()) <= 2100
-    assert prompt_metadata()["prompt_version"] == "sleep-observation-5"
+    assert prompt_metadata()["prompt_version"] == "sleep-observation-7"
     serialized = canonical_json(schema)
     for field in ("input_hash", "night_date", "evidence_level", "limitations", "status"):
         assert f'"{field}"' not in serialized
     assert schema["$defs"]["modelEvidenceIds"]["maxItems"] == 6
     assert contract_schema("output")["$defs"]["evidenceIds"]["maxItems"] == 12
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"text": "这晚睡眠数据齐全，可以分析睡眠。", "evidence_ids": ["F001"]},
+        {"text": "昨晚睡得很踏实。", "evidence_ids": ["F007"]},
+    ],
+)
+def test_new_sleep_summary_requires_sleep_evidence_and_rejects_collection_lead(summary):
+    source, candidate = model_example()
+    candidate["summary"] = summary
+    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
+        validate_model_output(candidate, source)
+    historical = example()["output"]
+    historical["summary"] = summary
+    validate_sleep_output(historical, source)
 
 
 def test_model_assembly_is_pure_and_keeps_existing_report_contract():

@@ -92,15 +92,15 @@ def response_for(request):
     }
     result = {
         "summary": {
-            "text": "已有观测可供记录，不能从单晚确定影响原因。"
-            if not payload["completeness"]["warnings"]
-            else "已有观测存在少量缺采，缺口仍需保留，不能据此确定影响原因。",
-            "evidence_ids": refs["sleep"] + refs["environment"],
+            "text": "手表只记下一小段睡眠，单凭时长还说不清醒来时的感受。",
+            "evidence_ids": refs["sleep"].copy(),
         },
         "observations": [
             {
                 "category": category,
-                "text": "已有该类观测，仅描述提供的证据；暂不推断因果关系。",
+                "text": "环境有缺采，难以判断缺口中的声音变化。"
+                if category == "environment" and payload["completeness"]["warnings"]
+                else "已有该类观测，仅描述提供的证据；暂不推断因果关系。",
                 "evidence_ids": evidence,
             }
             for category, evidence in refs.items()

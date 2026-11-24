@@ -808,6 +808,21 @@ def report_text_is_safe(text):
     return True
 
 
+def opens_with_collection_status(text):
+    # Only screen obvious collection-status leads in new answers. A later
+    # caveat about how a gap limits a sleep interpretation is legitimate.
+    lead = re.split(r"[，,。！？；;：:\n]", text.strip(), maxsplit=1)[0]
+    return bool(
+        re.search(
+            r"(?:数据|采样|采集|记录|指标|观测)(?:的)?(?:完整[度性]|覆盖率)|"
+            r"采样率|通过.{0,6}(?:核验|校验)|缺采|"
+            r"(?:数据|采样|采集|记录|指标|观测)(?:已|均|都|基本|较为|相对|较|很|十分|比较|总体)*"
+            r"(?:齐全|齐备|完整|达标|可用|缺失|覆盖充分|可供记录)",
+            lead,
+        )
+    )
+
+
 def assemble_model_output(candidate, input_payload):
     """Add only program-owned metadata to an already structurally validated answer.
 
@@ -817,6 +832,17 @@ def assemble_model_output(candidate, input_payload):
     try:
         _assert(set(candidate) == {"summary", "observations", "hypotheses", "actions"})
         _assert(set(candidate["summary"]) == {"text", "evidence_ids"})
+        summary = candidate["summary"]
+        sleep_ids = {
+            fact["id"]
+            for fact in input_payload["facts"]
+            if fact["metric"].startswith("sleep.")
+            and (fact["metric"].endswith("_minutes") or fact["metric"] == "sleep.score")
+        }
+        if feeling := input_payload.get("morning_feeling"):
+            sleep_ids.add(feeling["id"])
+        _assert(sleep_ids.intersection(summary["evidence_ids"]))
+        _assert(not opens_with_collection_status(summary["text"]))
         for group, fields in (
             ("observations", {"category", "text", "evidence_ids"}),
             ("hypotheses", {"factor", "text", "evidence_ids", "alternatives"}),

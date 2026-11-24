@@ -251,7 +251,7 @@ def _request(payload, *, correction=False):
             "请解释上面的这一晚证据，仅返回以下四个字段组成的JSON对象："
             + "、".join(schema["required"])
             + "。直接以{开头、}结尾，不要包装字符串或数组，也不要只返回observations列表。"
-            + "先回答昨晚睡得怎么样，指出哪些证据相互印证或有分歧。"
+            + "用一至两句说明昨晚最值得知道的表现，引用直接相关的时长、阶段、评分或睡感。"
             + "不写数字、时刻、百分比或证据编号；编号仅放evidence_ids。"
             + "不提供诊断、用药或治疗指令；证据有限时说清具体哪项判断受限。"
             + "比较须同时引用本晚或前日原值；睡眠类须引用时长事实。"
@@ -263,7 +263,7 @@ def _request(payload, *, correction=False):
         messages.append(
             ChatMessage(
                 "user",
-                "上次输出未通过合同验证。请重新输出规定的四字段JSON对象，摘要先解读本晚表现，包含四类观察与有效证据引用；文字不要写数字或医疗结论，不要输出Markdown或额外字段。",
+                "上次输出未通过合同验证。摘要首句写本晚的睡眠表现，引用时长、累计阶段、评分或睡感；缺采放在相关环境观察。返回规定的四字段JSON对象、四类观察与有效引用，正文不用数字，不输出医疗结论、Markdown或额外字段。",
             )
         )
     return ModelRequest(messages, schema, schema_name="sleepscape_sleep_report")

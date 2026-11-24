@@ -47,7 +47,7 @@ def prepared(configured, monkeypatch):
 def good_reply(_model, request):
     evidence = validate_evidence(json.loads(request.messages[1].content))
     result = {
-        "summary": {"text": "本段睡感各有差异。", "evidence_ids": ["A1"]},
+        "summary": {"text": "这段时间手表记录的典型睡眠时长很短。", "evidence_ids": ["A1"]},
         "observations": [
             {"text": "这晚的记录可以回看。", "evidence_ids": [evidence["examples"][0]]}
         ],
@@ -136,6 +136,25 @@ def test_reply_rejected_or_source_changed_does_not_publish_or_retry(prepared):
     assert weekly_review.run_review(settings, DAY, now=NOW)["model_calls"] == 0
 
 
+def test_new_review_summary_focus_preserves_historical_read(prepared):
+    from sleepscape.resources.weekly_review import parse_output, request_for, validate_output
+
+    settings, _ = prepared
+    complete(prepared)
+    with DashboardReader(settings.data_dir) as reader:
+        evidence, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
+    reply = json.loads(good_reply(None, request_for(evidence)).text)
+    temperature = next(row for row in evidence["aggregates"] if row["metric"] == "temperature_c")
+    for summary in (
+        {"text": "本周采样完整度较高，可进行睡眠分析。", "evidence_ids": evidence["examples"]},
+        {"text": "这段时间睡得很安稳。", "evidence_ids": [temperature["id"]]},
+    ):
+        reply["summary"] = summary
+        validate_output(reply, evidence)
+        with pytest.raises(ModelError, match="output_business_mismatch"):
+            parse_output(json.dumps(reply), evidence)
+
+
 def test_strict_output_rejects_fabricated_references_then_retries_until_shared_cap(prepared):
     settings, _ = prepared
     complete(prepared)
@@ -187,7 +206,7 @@ def test_migrates_a_legacy_failure_and_retries_with_correction(prepared):
 
     def caller(model, request):
         assert "上次输出未通过校验" in request.messages[0].content
-        assert "hypotheses和actions都填[]" in request.messages[0].content
+        assert "actions 有依据时保留一条" in request.messages[0].content
         if not failures:
             failures.append(True)
             raise ModelError("output_schema_max_items")

@@ -27,15 +27,16 @@ def wire_for(case):
     }
     return {
         "summary": {
-            "text": "本晚有少量缺采，无法判断原因。"
-            if source["completeness"]["quality_state"] == "with_gaps"
-            else "本晚已有可用观测，无法判断原因。",
-            "evidence_ids": refs["sleep"] + refs["environment"],
+            "text": "手表估计的睡眠时长只能说明睡了多久，晨起感受还要结合本人体验。",
+            "evidence_ids": refs["sleep"],
         },
         "observations": [
             {
                 "category": category,
-                "text": "已有该类观测，仅说明所给证据，不推断因果。",
+                "text": "环境有缺采，难以判断缺口中的声音变化。"
+                if category == "environment"
+                and source["completeness"]["quality_state"] == "with_gaps"
+                else "已有该类观测，仅说明所给证据，不推断因果。",
                 "evidence_ids": evidence,
             }
             for category, evidence in refs.items()
