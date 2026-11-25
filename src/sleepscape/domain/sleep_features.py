@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+import statistics
 from datetime import UTC, date, datetime, timedelta
 
 from sleepscape.domain.analysis_readiness import (
@@ -17,6 +18,7 @@ from sleepscape.domain.analysis_readiness import (
     evaluate_readiness,
 )
 from sleepscape.domain.morning_feeling import Feeling
+from sleepscape.domain.sleep_claims import comparison_phrase, nightly_claims_supported
 
 MAX_INPUT_BYTES = 24 * 1024
 MORNING_FEELING_EVIDENCE_ID = "F000"
@@ -268,8 +270,9 @@ def _baseline_facts(day, night, baseline_nights):
                     scaled = value / scale
                     low, high = FACT_REGISTRY[f"baseline.{name}"][3:]
                     if low <= scaled <= high:
-                        values.append(scaled)
-        mean = sum(values) / len(values) if len(values) >= 7 else None
+                        values.append(value)
+        # Average in the source unit, then convert once as for the current night.
+        mean = statistics.mean(values) / scale if len(values) >= 7 else None
         insufficient |= mean is None
         output.append(_fact(f"baseline.{name}", mean, len(values), 30))
         if mean is not None:
@@ -512,6 +515,9 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
         ):
             facts.append(_fact(name, card["value"]))
     baseline, insufficient = _baseline_facts(day, night, baseline_nights)
+    for fact in baseline:
+        if phrase := comparison_phrase(fact["metric"], fact["value"]):
+            fact["comparison_text"] = phrase
     facts.extend(baseline)
     limitations = {
         "wearable_estimates",
@@ -619,6 +625,12 @@ def validate_input_semantics(payload):
         raise SleepAnalysisError("invalid_analysis_input") from None
 
 
+def _validate_comparison(fact, expected):
+    _assert(math.isclose(fact["value"], expected, abs_tol=1e-9))
+    if "comparison_text" in fact:
+        _assert(fact["comparison_text"] == comparison_phrase(fact["metric"], expected))
+
+
 def _validate_input(p):
     _assert(len(canonical_json(p).encode()) <= MAX_INPUT_BYTES and p["input_hash"] == input_hash(p))
     start, end = (_instant(p["sleep_window"][k]) for k in ("start_at", "end_at"))
@@ -668,6 +680,8 @@ def _validate_input(p):
             (value is None and f["quality"] == "unavailable")
             or (_number(value) and low <= value <= high and f["quality"] == "valid")
         )
+        if "comparison_text" in f:
+            _assert(f["comparison_text"] == comparison_phrase(metric, value))
         valid, expected = f["valid_n"], f["expected_n"]
         _assert(
             (valid is None and expected is None)
@@ -698,18 +712,14 @@ def _validate_input(p):
             base = metrics.get(f"baseline.{name}", {})
             _assert(base.get("quality") == "valid")
             _assert(delta["valid_n"] == base["valid_n"] and delta["expected_n"] == 30)
-            _assert(
-                math.isclose(
-                    delta["value"], metrics[current]["value"] - base["value"], abs_tol=1e-9
-                )
-            )
+            _validate_comparison(delta, metrics[current]["value"] - base["value"])
     change = metrics.get("comparison.training_load_percent")
     if change:
         base = metrics.get("baseline.training_load", {})
         _assert(base.get("quality") == "valid" and base["value"] > 0)
         _assert(change["valid_n"] == 30 and change["expected_n"] == 30)
         expected = (metrics["previous.training_load"]["value"] / base["value"] - 1) * 100
-        _assert(math.isclose(change["value"], expected, abs_tol=1e-9))
+        _validate_comparison(change, expected)
     for name in ("temperature", "humidity", "illuminance"):
         mean = metrics[f"environment.{name}_mean"]["value"]
         low = metrics.get(f"environment.{name}_min", {}).get("value", mean)
@@ -850,6 +860,7 @@ def assemble_model_output(candidate, input_payload):
         ):
             _assert(isinstance(candidate[group], list))
             _assert(all(isinstance(row, dict) and set(row) == fields for row in candidate[group]))
+        _assert(nightly_claims_supported(candidate, input_payload))
         report = {
             "schema_version": "sleep-output-1",
             "night_date": input_payload["night_date"],

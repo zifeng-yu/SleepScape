@@ -78,6 +78,7 @@
       "properties": {
         "id": {"type": "string", "pattern": "^F[0-9]{3}$"},
         "metric": {"type": "string", "pattern": "^[a-z][a-z0-9_.]{1,79}$"},
+        "comparison_text": {"type": "string", "maxLength": 24},
         "value": {"type": ["number", "null"], "minimum": -1000000000, "maximum": 1000000000},
         "unit": {"enum": ["min", "bpm", "ms", "points", "load_units", "degC", "percent", "lx", "dBFS", "count"]},
         "source": {"enum": ["garmin", "environment", "derived"]},

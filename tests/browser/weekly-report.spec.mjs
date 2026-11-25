@@ -119,3 +119,29 @@ for (const width of [320, 390]) {
         await expect(page).toHaveURL(/view=night&date=2026-11-09/);
     });
 }
+
+test("paired evidence opens both the example and the counterexample with distinct night count", async ({ page }) => {
+    const text = "对照不同夜晚，醒来时间与晨起睡感的关系并不一致。";
+    const nights = [7, 8, 9].map((day, index) => ({
+        night_date: `2026-11-${String(day).padStart(2, "0")}`, id: `N${index + 1}`,
+        feeling: index === 1 ? "poor" : "fair", metrics: { sleep_seconds: 21600 },
+    }));
+    await page.route("**/api/v1/sleep-reviews/*", (route) => route.fulfill({ json: {
+        window, source_changed: false, report: {
+            generated_at: "2026-11-09T01:00:00Z",
+            evidence: { window: { ...window, eligible_n: 7 }, quality: { feeling_counts: null, limits: [] },
+                nights, aggregates: [], comparisons: [], pair_checks: [{
+                    id: "P3", metric: "sleep_end_offset_seconds", pair_n: 2, night_n: 3,
+                    example: ["N1","N2"], counterexample: ["N3","N2"], max_duration_gap_seconds: 0, text,
+                }] },
+            content: { summary: { text, evidence_ids: ["P3"] }, observations: [], hypotheses: [], actions: [] },
+        },
+    } }));
+    await page.goto(url);
+    const panel = page.locator(".weekly-report");
+    await panel.locator(":scope > summary").click();
+    await panel.getByText("醒来与睡感 · 2 对，涉及 3 晚", { exact: true }).click();
+    await expect(panel.getByText("反例", { exact: true })).toBeVisible();
+    await panel.getByText("11 月 9 日的夜晚证据", { exact: true }).click();
+    await expect(panel.getByRole("link", { name: "打开 2026-11-09 夜晚详情" })).toBeVisible();
+});

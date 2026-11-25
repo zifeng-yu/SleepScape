@@ -2,6 +2,7 @@
 
 from collections import Counter
 from datetime import date, timedelta
+from itertools import combinations
 from statistics import median
 
 from sleepscape.domain.dashboard_dates import visible_start
@@ -109,12 +110,89 @@ def _examples(nights):
     return list(dict.fromkeys(n["id"] for n in (poor, good, *recent) if n is not None))[:2]
 
 
+# Ratings are ordinal; their distance has no quantitative meaning.
+_RANK = {"poor": 0, "fair": 1, "good": 2}
+PAIR_LABELS = {
+    "sleep_seconds": ("睡眠时长", "更长", "更短"),
+    "sleep_start_offset_seconds": ("睡眠开始时间", "更晚", "更早"),
+    "sleep_end_offset_seconds": ("醒来时间", "更晚", "更早"),
+    "average_heart_rate": ("夜间平均心率", "更高", "更低"),
+    "night_average_hrv": ("夜间HRV", "更高", "更低"),
+    "training_load": ("前日负荷", "更高", "更低"),
+    "temperature_c": ("卧室温度", "更高", "更低"),
+    "relative_humidity_pct": ("卧室湿度", "更高", "更低"),
+    "illuminance_lux": ("卧室照度", "更高", "更低"),
+    "sound_relative": ("相对声音读数", "更高", "更低"),
+}
+
+
+def pair_checks(nights, examples):
+    """Test the illustrative pair against every equally duration-matched pair."""
+    # Preserve the original example when eligible. Otherwise use the most recent
+    # eligible pair, selected without looking at the sign of its difference.
+    pairs = []
+    for newer, older in combinations(reversed(nights), 2):
+        if None in (newer["feeling"], older["feeling"]) or newer["feeling"] == older["feeling"]:
+            continue
+        better, worse = sorted((newer, older), key=lambda n: _RANK[n["feeling"]], reverse=True)
+        ids = [better["id"], worse["id"]]
+        gap = abs(better["metrics"]["sleep_seconds"] - worse["metrics"]["sleep_seconds"])
+        pairs.append((ids, gap, better, worse))
+    pairs.sort(key=lambda p: set(p[0]) != set(examples))
+    result = []
+    for index, (metric, (label, higher, lower)) in enumerate(PAIR_LABELS.items(), 1):
+        eligible = []
+        for ids, gap, better, worse in pairs:
+            if metric not in better["metrics"] or metric not in worse["metrics"]:
+                continue
+            group = better["environment_group"] if metric in _ENVIRONMENT else None
+            if group is not None and group != worse["environment_group"]:
+                continue
+            difference = better["metrics"][metric] - worse["metrics"][metric]
+            direction = (difference > 0) - (difference < 0)
+            eligible.append((ids, gap, group, direction))
+        if not eligible:
+            continue
+        anchor, max_gap, group, direction = eligible[0]
+        matched = [
+            p for p in eligible if p[2] == group and (metric == "sleep_seconds" or p[1] <= max_gap)
+        ]
+        # Prefer an actual reversal over a tie when both weaken the example.
+        counter = next((p for p in matched if p[3] * direction < 0), None)
+        if counter is None:
+            counter = next((p for p in matched if p[3] != direction), None)
+        if counter:
+            sentence = f"对照不同夜晚，{label}与晨起睡感的关系并不一致。"
+        else:
+            scope = "仅有这对夜晚可比" if len(matched) == 1 else "在这些可比夜晚中"
+            detail = (
+                f"睡感相对较好的那晚{label}{higher if direction > 0 else lower}"
+                if direction
+                else f"不同睡感对应相同的{label}"
+            )
+            sentence = f"{scope}，{detail}。"
+        result.append(
+            {
+                "id": f"P{index}",
+                "metric": metric,
+                "example": anchor,
+                "counterexample": counter[0] if counter else [],
+                "max_duration_gap_seconds": None if metric == "sleep_seconds" else max_gap,
+                "pair_n": len(matched),
+                "night_n": len({n for p in matched for n in p[0]}),
+                "text": sentence,
+            }
+        )
+    return result
+
+
 def build_evidence(nights, feeling_state):
     aggregates, comparisons = _statistics(nights)
     limits = {code for night in nights for code in night["limits"]}
     if len({night["environment_group"] for night in nights}) > 1:
         limits.add("environment_groups_differ")
     counts = Counter(night["feeling"] or "unfilled" for night in nights)
+    examples = _examples(nights)
     return {
         "window": {
             "start_date": nights[0]["night_date"],
@@ -132,5 +210,6 @@ def build_evidence(nights, feeling_state):
         "aggregates": aggregates,
         "comparisons": comparisons,
         "nights": nights,
-        "examples": _examples(nights),
+        "examples": examples,
+        "pair_checks": pair_checks(nights, examples),
     }

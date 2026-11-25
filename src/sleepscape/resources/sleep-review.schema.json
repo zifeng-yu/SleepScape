@@ -128,6 +128,84 @@
           "pattern": "^N[1-7]$"
         },
         "uniqueItems": true
+      },
+      "pair_checks": {
+        "type": "array",
+        "maxItems": 10,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^P([1-9]|10)$"
+            },
+            "metric": {
+              "enum": [
+                "sleep_seconds",
+                "sleep_start_offset_seconds",
+                "sleep_end_offset_seconds",
+                "average_heart_rate",
+                "night_average_hrv",
+                "training_load",
+                "temperature_c",
+                "relative_humidity_pct",
+                "illuminance_lux",
+                "sound_relative"
+              ]
+            },
+            "example": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^N[1-7]$"
+              },
+              "uniqueItems": true,
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "counterexample": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^N[1-7]$"
+              },
+              "uniqueItems": true,
+              "maxItems": 2
+            },
+            "max_duration_gap_seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "pair_n": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 21
+            },
+            "night_n": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 7
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 100
+            }
+          },
+          "required": [
+            "id",
+            "metric",
+            "example",
+            "counterexample",
+            "max_duration_gap_seconds",
+            "pair_n",
+            "night_n",
+            "text"
+          ]
+        }
       }
     },
     "required": [
@@ -436,7 +514,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "pattern": "^[ACN][1-9][0-9]?$"
+              "pattern": "^[ACNP][1-9][0-9]?$"
             },
             "minItems": 1,
             "maxItems": 6,
@@ -459,7 +537,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "pattern": "^[ACN][1-9][0-9]?$"
+              "pattern": "^[ACNP][1-9][0-9]?$"
             },
             "minItems": 1,
             "maxItems": 6,
@@ -486,7 +564,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "pattern": "^[ACN][1-9][0-9]?$"
+              "pattern": "^[ACNP][1-9][0-9]?$"
             },
             "minItems": 1,
             "maxItems": 6,

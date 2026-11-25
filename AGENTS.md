@@ -81,7 +81,7 @@
 
 - 双源完整性只计算当前策略，门槛与光照短暂通信异常的例外只维护于data-contract.md。分析资格与真实完整率独立，with_gaps保留缺口和限制。旧策略的审计和报告按原合同读取、备份并保留原证据。发布证据见核验报告；真实采样计数和时段仅存私有报告及受保护页面，不复制到公开文档。
 
-- 报告领域为domain/sleep_features.py，资源IO和Schema校验为resources/；Schema/Prompt只在包内维护，文档链接引用，不保留复制稿。services/sleep_inputs.py同快照读取当前与30日基线；services/sleep_analysis.py负责预算、重试、来源核对和唯一发布；storage/sleep_analysis.py负责报告四表及可选手动修订。外呼前结束SQLite事务，发布写事务内再核对资格/输入/来源/配置，不把模型锁等同数据库锁。
+- 逐夜特征和陈述依据分别由domain/sleep_features.py与domain/sleep_claims.py维护，资源IO和Schema校验为resources/；Schema/Prompt只在包内维护，文档链接引用，不保留复制稿。services/sleep_inputs.py同快照读取当前与30日基线；services/sleep_analysis.py负责预算、重试、来源核对和唯一发布；storage/sleep_analysis.py负责报告四表及可选手动修订。外呼前结束SQLite事务，发布写事务内再核对资格/输入/来源/配置，不把模型锁等同数据库锁。
 - sleep-analysis-prepare先备份与临时恢复核验，再显式创建sleep_analysis_schema/analysis_inputs/analysis_attempts/sleep_analysis_reports；与原检查三表独立。输入/成功报告不可改删，尝试只从running转终态，不删历史绕过每晚唯一或预算。备份含存在的新表及载荷/引用校验；普通GET/启动/日任务不迁移。
 - 复盘由 `services/weekly_review.py` 复用当前双源核验、睡感和 P1 调用。独立包内 Prompt/Schema，对实际窗口逐夜检查，任何日期未通过则明示缺项且零复盘调用。历史中位数只按观测计算。复盘审计升级用 `sleep-review-prepare` 先备份和临时恢复，重试时保留失败请求、输入与错误码。
 - 当夜解读与 7 日复盘共享 P1 的上海自然日 30 次物理预算。逐夜沿用每夜累计 10 次上限；复盘在同日剩余额度及任务时限内重试可恢复失败。失败、超时及中断保留审计并占额度。遵守 Retry-After，超过 30 秒留待后续；认证、配置及能力错误停止调用。Schema 诊断只存固定安全码，业务失败为 `output_business_mismatch`。已发布报告保留原证据及来源变化提示；逐夜显式重读按运行手册执行。09:00 服务总时限 2 小时。预算、执行状态和恢复口径只维护在数据契约。

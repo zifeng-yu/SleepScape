@@ -61,8 +61,21 @@ function metricValue(metric, value) {
     return [numericText(value, 2), METRICS.get(metric)?.[1]].filter(Boolean).join(" ");
 }
 
-function evidenceDetails(row) {
+function evidenceDetails(row, byID) {
     const detail = el("details", "weekly-evidence");
+    if (row.id.startsWith("P")) {
+        detail.append(el("summary", "", `${METRICS.get(row.metric)?.[0] || "指标"}与睡感 · ${row.pair_n} 对，涉及 ${row.night_n} 晚`));
+        if (row.max_duration_gap_seconds !== null) detail.append(el("p", "", `所比夜晚的时长差最多为 ${numericText(row.max_duration_gap_seconds, 1)} 秒。`));
+        for (const [label, ids] of [["例证", row.example], ["反例", row.counterexample]]) {
+            if (!ids.length) continue;
+            detail.append(el("p", "", label));
+            for (const id of ids) {
+                const night = byID.get(id);
+                if (night?.night_date) detail.append(evidenceDetails(night, byID));
+            }
+        }
+        return detail;
+    }
     if (row.night_date && validDate(row.night_date)) {
         detail.append(el("summary", "", `${dateLabel(row.night_date)}的夜晚证据`));
         const link = el("a", "history-date", `打开 ${row.night_date} 夜晚详情`);
@@ -92,7 +105,7 @@ function evidenceDetails(row) {
 function appendReport(body, data, time) {
     const { content, evidence, generated_at } = data.report;
     const byID = new Map(
-        [...evidence.aggregates, ...evidence.comparisons, ...evidence.nights].map((row) => [row.id, row]),
+        [...evidence.aggregates, ...evidence.comparisons, ...evidence.nights, ...(evidence.pair_checks || [])].map((row) => [row.id, row]),
     );
     const counts = evidence.quality.feeling_counts;
     const ratings = counts ? counts.poor + counts.fair + counts.good : null;
@@ -117,7 +130,7 @@ function appendReport(body, data, time) {
             if (statement.observe) section.append(el("p", "", `观察项 ${statement.observe}`));
             for (const id of statement.evidence_ids) {
                 const row = byID.get(id);
-                if (row) section.append(evidenceDetails(row));
+                if (row) section.append(evidenceDetails(row, byID));
             }
         }
         body.append(section);

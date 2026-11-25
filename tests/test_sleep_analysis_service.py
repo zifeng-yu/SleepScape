@@ -108,6 +108,10 @@ def response_for(request):
         "hypotheses": [],
         "actions": [],
     }
+    if feeling := payload.get("morning_feeling"):
+        label = {"good": "较好", "fair": "一般", "poor": "较差"}[feeling["value"]]
+        result["summary"]["text"] = f"晨起睡感{label}。" + result["summary"]["text"]
+        result["summary"]["evidence_ids"].append(feeling["id"])
     validate_model_output(result, payload)
     return ModelResult(
         json.dumps(result, ensure_ascii=False), "qwen3.8-max", "stop", {"total_tokens": 40}

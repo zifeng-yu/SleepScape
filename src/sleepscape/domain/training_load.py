@@ -1,6 +1,7 @@
 """Pure 30-calendar-day comparison; callers decide which observations are usable."""
 
 from datetime import date, timedelta
+from statistics import mean
 
 
 def load_comparison(daily_loads, target_date: str):
@@ -16,8 +17,8 @@ def load_comparison(daily_loads, target_date: str):
     baseline = [lookup.get(day, {}).get("load") for day in baseline_dates]
     valid = [v for v in baseline if v is not None]
     current = lookup.get(target_date, {}).get("load")
-    mean = sum(valid) / 30 if len(valid) == 30 else None
-    change = (current / mean - 1) * 100 if mean and current is not None else None
+    baseline_mean = float(mean(valid)) if len(valid) == 30 else None
+    change = (current / baseline_mean - 1) * 100 if baseline_mean and current is not None else None
     return {
         "target_date": target_date,
         "target_load": current,
@@ -25,7 +26,7 @@ def load_comparison(daily_loads, target_date: str):
         "baseline_end": baseline_dates[-1],
         "baseline_valid_days": len(valid),
         "baseline_required_days": 30,
-        "baseline_mean": mean,
+        "baseline_mean": baseline_mean,
         "change_percent": change,
         "definition": "all recorded activity loads; calendar days; target excluded",
         "zero_definition": (

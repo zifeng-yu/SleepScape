@@ -30,6 +30,13 @@ def test_load_comparison_excludes_target_and_future_from_exact_previous_30_days(
     assert result["change_percent"] == 300
 
 
+def test_constant_fractional_load_has_zero_change():
+    rows = baseline_rows(0.03) + [{"date": "2026-01-31", "load": 0.03}]
+    result = load_comparison(rows, "2026-01-31")
+    assert result["baseline_mean"] == result["target_load"]
+    assert result["change_percent"] == 0
+
+
 @pytest.mark.parametrize(
     "missing_mode", ["absent_day", "missing_load", "missing_target", "zero_mean"]
 )

@@ -115,6 +115,7 @@ function evidenceCard(row, kind, time, day) {
         title = metricName(row);
         values.push(["观测值", row.quality === "valid" && finite(row.value) ? `${number(row.value)} ${UNITS[row.unit]}` : "未提供有效值"],
             ["来源", SOURCES[row.source]], ["对应周期", PERIODS[row.period]]);
+        if (row.comparison_text) values.push(["与个人均值比较", row.comparison_text]);
         if (row.valid_n !== null || row.expected_n !== null) values.push([row.period === "baseline30" ? row.metric === "baseline.training_load" ? "有效完整日／预期日" : "有效夜晚／预期夜晚" : "有效数量／预期数量", `${number(row.valid_n)} / ${number(row.expected_n)}`]);
         if (row.period === "night") values.push(["睡眠归属日", day]);
         if (row.period === "previous_day") { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - 1); values.push(["来源日", d.toISOString().slice(0, 10)]); }

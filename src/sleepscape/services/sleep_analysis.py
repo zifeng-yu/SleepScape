@@ -263,7 +263,10 @@ def _request(payload, *, correction=False):
         messages.append(
             ChatMessage(
                 "user",
-                "上次输出未通过合同验证。摘要首句写本晚的睡眠表现，引用时长、累计阶段、评分或睡感；缺采放在相关环境观察。返回规定的四字段JSON对象、四类观察与有效引用，正文不用数字，不输出医疗结论、Markdown或额外字段。",
+                "上次输出未通过合同验证。摘要先写有依据的睡眠表现。"
+                "比较仅照录 comparison_text 并引原值和差值，已填睡感按原评级写明并引用。"
+                "缺采放在环境观察。返回四字段 JSON 对象、四类观察与有效引用。"
+                "正文不用数字，不输出医疗结论、Markdown 或额外字段。",
             )
         )
     return ModelRequest(messages, schema, schema_name="sleepscape_sleep_report")

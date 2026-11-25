@@ -88,7 +88,10 @@ def _snapshot(settings, reader, days, clock):
     if failures:
         return None, None, failures
     evidence = build_evidence(entries, feeling_state)
-    return evidence, store.digest(_semantic([evidence, origins])), []
+    # Pair checks are derived from these same facts. Preserve the existing
+    # source fingerprint when only the report contract changed.
+    source = {key: value for key, value in evidence.items() if key != "pair_checks"}
+    return evidence, store.digest(_semantic([source, origins])), []
 
 
 def prepare_review(settings):

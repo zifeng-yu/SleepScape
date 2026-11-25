@@ -119,7 +119,7 @@ def test_small_model_contract_has_only_authored_fields_and_short_prompt():
     assert schema["type"] == "object" and schema["additionalProperties"] is False
     assert len(canonical_json(schema).encode()) < 2200
     assert len(system_prompt().encode()) <= 2100
-    assert prompt_metadata()["prompt_version"] == "sleep-observation-7"
+    assert prompt_metadata()["prompt_version"] == "sleep-observation-8"
     serialized = canonical_json(schema)
     for field in ("input_hash", "night_date", "evidence_level", "limitations", "status"):
         assert f'"{field}"' not in serialized
@@ -443,6 +443,15 @@ def test_load_comparison_requires_thirty_fresh_complete_days():
         "change_percent": -100,
     }
     assert facts(build(n, e))["comparison.training_load_percent"]["value"] == -100
+    equal = copy.deepcopy(n)
+    equal["cards"]["training_load"].update(value=10, activity_count=1, reason=None)
+    equal["load_comparison"]["change_percent"] = 0
+    payload = build(equal, e)
+    delta = facts(payload)["comparison.training_load_percent"]
+    assert delta["comparison_text"] == "前日负荷等于个人均值"
+    delta.update(value=1e-12, comparison_text="前日负荷高于个人均值")
+    with pytest.raises(SleepAnalysisError):
+        validate_sleep_input(mutate_hash(payload))
     for patch in [{"baseline_fresh_days": 29}, {"baseline_mean": 0}, {"state": "stale"}]:
         altered = copy.deepcopy(n)
         altered["load_comparison"].update(patch)
@@ -759,3 +768,121 @@ def test_recording_medication_context_is_allowed_as_action_without_treatment():
     x["output"]["actions"][0]["text"] = "记录用药情况，然后服用药物。"
     with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
         validate_sleep_output(x["output"], x["input"])
+
+
+def test_new_nightly_comparisons_citations_and_historical_reader():
+    night, env = sample()
+    history = baseline(night)
+    for item in history:
+        item["cards"]["night_average_hrv"]["value"] = (
+            night["cards"]["night_average_hrv"]["value"] + 1
+        )
+    source = build(night, env, baseline_nights=history, morning_feeling="fair")
+    f = facts(source)
+    hr, hrv = (
+        f["comparison." + name + "_delta"] for name in ("average_heart_rate", "night_average_hrv")
+    )
+    assert hr["comparison_text"] == "夜间平均心率高于个人均值"
+    assert hrv["comparison_text"] == "夜间HRV低于个人均值"
+    from test_sleep_analysis_service import response_for
+
+    from sleepscape.services.sleep_analysis import _request
+
+    reply = json.loads(response_for(_request(source)).text)
+    body = next(r for r in reply["observations"] if r["category"] == "body_signals")
+    body["text"] = hr["comparison_text"] + "，" + hrv["comparison_text"] + "。"
+    body["evidence_ids"].extend([hr["id"], hrv["id"]])
+    stored = validate_model_output(reply, source)
+    unsigned = copy.deepcopy(source)
+    facts(unsigned)[hr["metric"]].pop("comparison_text")
+    validate_sleep_input(mutate_hash(unsigned))
+    with pytest.raises(SleepAnalysisError):
+        validate_model_output(reply, unsigned)
+    for wrong in (
+        body["text"] + "两者方向一致。",
+        body["text"].replace("低于", "高于"),
+        body["text"].replace("高于", "略高于"),
+        "并非" + body["text"],
+    ):
+        candidate = copy.deepcopy(reply)
+        candidate["observations"][reply["observations"].index(body)]["text"] = wrong
+        with pytest.raises(SleepAnalysisError):
+            validate_model_output(candidate, source)
+    old = copy.deepcopy(stored)
+    next(r for r in old["observations"] if r["category"] == "body_signals")["text"] += (
+        "两者方向一致。"
+    )
+    validate_sleep_output(old, source)
+    candidate = copy.deepcopy(reply)
+    candidate["summary"]["evidence_ids"].remove("F000")
+    with pytest.raises(SleepAnalysisError):
+        validate_model_output(candidate, source)
+    candidate = copy.deepcopy(reply)
+    candidate["summary"]["text"] += "夜间HRV低于个人均值。"
+    with pytest.raises(SleepAnalysisError):
+        validate_model_output(candidate, source)
+    environment = next(r for r in reply["observations"] if r["category"] == "environment")
+    environment["text"] += "温度波动可在所引范围内核对。"
+    with pytest.raises(SleepAnalysisError):
+        validate_model_output(reply, source)
+    environment["evidence_ids"].extend(
+        f["environment.temperature_" + edge]["id"] for edge in ("min", "max")
+    )
+    validate_model_output(reply, source)
+    forged = copy.deepcopy(source)
+    facts(forged)[hr["metric"]]["comparison_text"] = "夜间平均心率低于个人均值"
+    with pytest.raises(SleepAnalysisError):
+        validate_sleep_input(mutate_hash(forged))
+
+
+def test_constant_source_duration_has_exactly_zero_comparison():
+    night, env = sample()
+    night["cards"]["sleep_seconds"]["value"] = 74
+    source = build(night, env, baseline_nights=baseline(night, count=7))
+    delta = facts(source)["comparison.sleep_total_minutes_delta"]
+    assert delta["value"] == 0
+    assert delta["comparison_text"] == "睡眠时长等于个人均值"
+    delta["value"] = -1e-12
+    delta["comparison_text"] = "睡眠时长短于个人均值"
+    with pytest.raises(SleepAnalysisError):
+        validate_sleep_input(mutate_hash(source))
+
+
+def test_publish_checks_all_assertions_including_second_sentences_and_alternatives():
+    from test_sleep_analysis_service import response_for
+
+    from sleepscape.services.sleep_analysis import _request
+
+    night, env = sample()
+    source = build(night, env, baseline_nights=baseline(night), morning_feeling="fair")
+    reply = json.loads(response_for(_request(source)).text)
+    f = facts(source)
+
+    def rejected(target, field, text):
+        before = target[field]
+        target[field] = text
+        try:
+            with pytest.raises(SleepAnalysisError):
+                validate_model_output(reply, source)
+        finally:
+            target[field] = before
+
+    body = next(r for r in reply["observations"] if r["category"] == "body_signals")
+    rejected(body, "text", "夜间平均心率在个人均值以下。")
+    rejected(body, "text", "心率走低，HRV也走低。")
+    env_row = next(r for r in reply["observations"] if r["category"] == "environment")
+    rejected(env_row, "text", env_row["text"] + "卧室温度有记录。整夜都很稳定。")
+    rejected(reply["summary"], "text", "晨起睡感并非一般。")
+    hyp = {
+        "factor": "temperature",
+        "text": "卧室温度可留作背景。",
+        "evidence_ids": [f["environment.temperature_mean"]["id"]],
+        "alternatives": ["还有未记录的其他因素。"],
+    }
+    reply["hypotheses"] = [hyp]
+    rejected(hyp, "alternatives", ["晨起睡感较差。"])
+    rejected(hyp, "alternatives", ["手表记录了浅睡时长。"])
+    hyp["alternatives"] = ["下次可以记录是否感觉有压力。"]
+    body["evidence_ids"].append(f["comparison.average_heart_rate_delta"]["id"])
+    body["text"] = "另外，昨晚夜间平均心率高于个人均值。"
+    validate_model_output(reply, source)
