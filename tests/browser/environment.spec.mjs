@@ -335,15 +335,18 @@ test("mobile observation details stay within the viewport and can be pinned, scr
 
     // A lower track remains clickable after the top of the long chart scrolls away.
     const canvas = page.locator(".chart-canvas");
-    await canvas.evaluate((element) => element.scrollIntoView({ block: "end" }));
+    await canvas.evaluate((element) => {
+        element.scrollIntoView({ block: "end", behavior: "instant" });
+        window.scrollBy({ top: 240, behavior: "instant" });
+    });
     let box = await canvas.boundingBox();
-    await page.mouse.move(box.x + box.width * 0.7, box.y + box.height - 80);
-    await page.mouse.wheel(0, 240);
-    await expect.poll(async () => (await canvas.boundingBox()).y).toBeLessThan(0);
-    box = await canvas.boundingBox();
+    expect(box.y).toBeLessThan(0);
     const minuteFraction = (Date.parse("2026-11-08T17:10:30Z") - Date.parse(payload.window.start)) /
         (Date.parse(payload.window.end) - Date.parse(payload.window.start));
-    await page.mouse.click(box.x + 55 + minuteFraction * (box.width - 55 - 14), box.y + box.height - 80);
+    const lowerPoint = { x: box.x + 55 + minuteFraction * (box.width - 55 - 14), y: box.y + box.height - 80 };
+    expect(await canvas.evaluate((element, point) =>
+        document.elementFromPoint(point.x, point.y) === element, lowerPoint)).toBe(true);
+    await page.mouse.click(lowerPoint.x, lowerPoint.y);
     await expect(tooltip).toHaveClass(/is-pinned/);
     const lowerBounds = await tooltip.boundingBox();
     expect(lowerBounds.x).toBeGreaterThanOrEqual(0);
