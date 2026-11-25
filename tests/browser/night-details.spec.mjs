@@ -237,4 +237,22 @@ test("sound playback requests only a published clip and only after a click", asy
     expect(await page.locator("#events-panel").evaluate(p => p.scrollWidth <= p.clientWidth)).toBe(true);
     await page.locator('[data-event-filter="activity"]').click();
     await expect.poll(() => audio.evaluate(a => a.paused)).toBe(true);
+
+    // Once bound, even "original" is silent if the shared context cannot resume.
+    await page.locator('[data-event-filter="all"]').click();
+    await mode.selectOption("original");
+    const beforeRecovery = await audio.evaluate(a => a.currentTime);
+    await page.evaluate(async () => {
+        window.boundClip = document.querySelector("#events-panel audio");
+        await window.clipContext.suspend();
+        window.clipContext.resume = () => new Promise(() => {});
+    });
+    await player.click();
+    await expect.poll(() => audio.evaluate(a => a !== window.boundClip)).toBe(true);
+    await expect(mode).toHaveValue("original");
+    await expect(pause).toBeVisible();
+    await expect.poll(() => audio.evaluate(a => a.currentTime)).toBeGreaterThan(beforeRecovery);
+    await pause.click();
+    await player.click();
+    await expect(pause).toBeVisible();
 });

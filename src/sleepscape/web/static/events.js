@@ -24,7 +24,7 @@ function disposeEventAudio(panel) {
 
 function clipControls(key) {
     const controls = el("span", "clip-controls");
-    const audio = el("audio");
+    let audio = el("audio");
     audio.preload = "none";
     audio.src = `/api/v1/event-audio/${key}`;
     const mode = el("select");
@@ -49,32 +49,57 @@ function clipControls(key) {
         source.disconnect();
         source.connect(mode.value === "filtered" ? filter : context.destination);
     }
+    let attempt = 0;
     async function applyMode() {
+        const current = ++attempt;
         if (!source && mode.value === "original") return;
         const panel = controls.closest("#events-panel");
         if (!panel) return;
+        let timeout;
         try {
             let context = contexts.get(panel);
-            if (!context) {
+            if (!context || context.state === "closed") {
                 context = new AudioEngine();
                 contexts.set(panel, context);
             }
-            if (context.state !== "running") await context.resume();
-            if (contexts.get(panel) === context && (source || mode.value === "filtered"))
-                connect(context);
+            if (context.state !== "running") {
+                // A browser interruption can leave resume() pending indefinitely.
+                await Promise.race([context.resume(), new Promise((_, reject) => {
+                    timeout = setTimeout(() => reject(new Error("Audio output unavailable")), 1500);
+                })]);
+            }
+            if (current !== attempt || !panel.isConnected) return;
+            if (context.state !== "running") throw new Error("Audio output unavailable");
+            connect(context);
         } catch {
-            if (!panel.isConnected) return;
+            if (current !== attempt || !panel.isConnected) return;
             mode.value = "original";
             mode.disabled = true;
-            mode.title = "低频处理不可用";
+            mode.title = "低频处理不可用，使用原声";
             if (source) {
+                // A media element bound to Web Audio cannot return to native
+                // output by disconnecting its source. Use a fresh element.
+                const previous = audio;
+                const position = previous.currentTime;
+                const wasPlaying = !previous.paused;
+                previous.pause();
                 source.disconnect();
-                source.connect(source.context.destination);
-                if (source.context.state !== "running") {
-                    audio.pause();
-                    play.textContent = "无法播放";
+                filter.disconnect();
+                source = filter = undefined;
+                audio = previous.cloneNode(false);
+                previous.replaceWith(audio);
+                bindPlaybackEvents(audio);
+                audio.currentTime = position;
+                play.textContent = "播放";
+                if (wasPlaying) {
+                    try { await audio.play(); }
+                    catch (error) {
+                        if (error.name !== "AbortError") play.textContent = "点击重试播放";
+                    }
                 }
             }
+        } finally {
+            clearTimeout(timeout);
         }
     }
     mode.addEventListener("change", () => {
@@ -93,9 +118,19 @@ function clipControls(key) {
             if (error.name !== "AbortError") play.textContent = "无法播放";
         }
     });
-    audio.addEventListener("playing", () => { play.textContent = "暂停"; });
-    audio.addEventListener("pause", () => { play.textContent = "播放"; });
-    audio.addEventListener("ended", () => { play.textContent = "播放"; });
+    function bindPlaybackEvents(element) {
+        element.addEventListener("playing", () => {
+            if (element === audio) play.textContent = "暂停";
+        });
+        function stopped() {
+            if (element !== audio || !element.paused) return;
+            ++attempt;
+            play.textContent = "播放";
+        }
+        element.addEventListener("pause", stopped);
+        element.addEventListener("ended", stopped);
+    }
+    bindPlaybackEvents(audio);
     return add(controls, play, mode, audio);
 }
 
