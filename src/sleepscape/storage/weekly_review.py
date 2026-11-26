@@ -104,6 +104,30 @@ for _operation in ("UPDATE", "DELETE"):
     )
 
 
+_REVISION_TABLE = "sleep_review_revisions"
+_REVISION_DDL = {
+    _REVISION_TABLE: """CREATE TABLE sleep_review_revisions (
+      end_date TEXT PRIMARY KEY REFERENCES sleep_review_reports(end_date),
+      request_id TEXT UNIQUE NOT NULL, generated_at TEXT NOT NULL,
+      contract_hash TEXT NOT NULL, content TEXT NOT NULL, revision_hash TEXT NOT NULL)"""
+}
+for _operation in ("UPDATE", "DELETE"):
+    _name = f"{_REVISION_TABLE}_no_{_operation.lower()}"
+    _REVISION_DDL[_name] = (
+        f"CREATE TRIGGER {_name} BEFORE {_operation} ON {_REVISION_TABLE} "
+        "BEGIN SELECT RAISE(ABORT,'sleep_review_immutable'); END"
+    )
+
+
+def revisions_available(db):
+    found = dict(
+        db.execute("SELECT name,sql FROM sqlite_master WHERE name IN (?,?,?)", tuple(_REVISION_DDL))
+    )
+    if found and found != _REVISION_DDL:
+        raise ReviewStorageError()
+    return bool(found)
+
+
 class ReviewStorageError(ValueError):
     def __init__(self, code="sleep_review_state_unavailable"):
         super().__init__(code)
@@ -139,9 +163,12 @@ def available(connection):
 
 def table_names(connection):
     version = schema_version(connection)
-    if version == 2:
-        return TABLES + (_HISTORY_TABLE,)
-    return TABLES if version else ()
+    tables = TABLES + (_HISTORY_TABLE,) if version == 2 else TABLES if version else ()
+    if revisions_available(connection):
+        if not tables:
+            raise ReviewStorageError()
+        return tables + (_REVISION_TABLE,)
+    return tables
 
 
 @contextmanager
@@ -353,7 +380,7 @@ def _input(row):
     return evidence
 
 
-def load_report(db, end):
+def load_report(db, end, *, original=False):
     row = db.execute(
         "SELECT r.*, i.payload, i.source_hash, i.config_hash, i.contract_hash "
         "FROM sleep_review_reports r JOIN sleep_review_inputs i USING(input_id,end_date) "
@@ -381,12 +408,68 @@ def load_report(db, end):
     ):
         raise ReviewStorageError()
     validate_output(content, evidence)
+    if not original and revisions_available(db):
+        revision = db.execute(
+            "SELECT * FROM sleep_review_revisions WHERE end_date=?", (end,)
+        ).fetchone()
+        if revision:
+            revised = _decode(revision["content"], MAX_RESPONSE_BYTES)
+            _stamp(revision["generated_at"])
+            key = [
+                row["report_hash"],
+                revision["request_id"],
+                revision["generated_at"],
+                revision["contract_hash"],
+                revised,
+            ]
+            if (
+                not _REQUEST.fullmatch(revision["request_id"])
+                or not _HEX.fullmatch(revision["contract_hash"])
+                or digest(key) != revision["revision_hash"]
+            ):
+                raise ReviewStorageError()
+            validate_output(revised, evidence)
+            content = revised
+            row = dict(row, generated_at=revision["generated_at"])
     return {
         "generated_at": row["generated_at"],
         "evidence": evidence,
         "content": content,
         "source_hash": row["source_hash"],
     }
+
+
+def register_revision(data_dir, end, source_hash, contract_hash, request_id, generated_at, content):
+    """Explicitly attach an audited manual result to the same immutable source."""
+    require_capacity(data_dir, "write")
+    with connection(data_dir) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        original = load_report(db, end, original=True)
+        if not original or original["source_hash"] != source_hash:
+            raise ReviewStorageError()
+        validate_output(content, original["evidence"])
+        _stamp(generated_at)
+        if not _REQUEST.fullmatch(request_id) or not _HEX.fullmatch(contract_hash):
+            raise ReviewStorageError()
+        if not revisions_available(db):
+            for statement in _REVISION_DDL.values():
+                db.execute(statement)
+        parent = db.execute(
+            "SELECT report_hash FROM sleep_review_reports WHERE end_date=?", (end,)
+        ).fetchone()[0]
+        checksum = digest([parent, request_id, generated_at, contract_hash, content])
+        saved = db.execute(
+            "SELECT revision_hash FROM sleep_review_revisions WHERE end_date=?", (end,)
+        ).fetchone()
+        if saved:
+            if saved[0] != checksum:
+                raise ReviewStorageError()
+        else:
+            db.execute(
+                "INSERT INTO sleep_review_revisions VALUES(?,?,?,?,?,?)",
+                (end, request_id, generated_at, contract_hash, canonical_json(content), checksum),
+            )
+        load_report(db, end)
 
 
 def _stamp(value):

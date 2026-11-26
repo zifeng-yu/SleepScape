@@ -422,3 +422,31 @@ def test_daily_publishes_both_report_types_on_the_same_ledger(prepared, monkeypa
     assert ("morning_feeling" in nightly["evidence"]) == (feeling is not None)
     assert (nightly["content"]["feeling"] is not None) == (feeling is not None)
     assert weekly_review.review_view(settings, DAY, now=NOW)["report"] is not None
+
+
+def test_registered_weekly_revision_visible_and_restorable(prepared):
+    settings, _ = prepared
+    complete(prepared)
+    assert (
+        weekly_review.run_review(settings, DAY, now=NOW, caller=good_reply)["state"] == "complete"
+    )
+    with DashboardReader(settings.data_dir) as reader:
+        original = store.load_report(reader.connection, str(DAY))
+    revised = dict(original["content"], summary={"text": "本段窗口有跨晚波动。"})
+    args = (
+        settings.data_dir,
+        str(DAY),
+        original["source_hash"],
+        "a" * 64,
+        "b" * 32,
+        NOW.isoformat(),
+        revised,
+    )
+    for _ in range(2):
+        store.register_revision(*args)
+    assert weekly_review.review_view(settings, DAY, now=NOW)["report"]["content"] == revised
+    with DashboardReader(settings.data_dir) as reader:
+        assert store.load_report(reader.connection, str(DAY), original=True) == original
+    assert weekly_review.run_review(settings, DAY, now=NOW)["model_calls"] == 0
+    b = create_backup(settings)
+    assert check_restore(settings, Path(b["backup_path"]))["status"] == "verified"
