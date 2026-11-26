@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import requests
+from environment_samples import sample_profile
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -54,9 +55,14 @@ def payload():
 
 @pytest.fixture
 def profile():
-    return MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    return sample_profile()
+
+
+@pytest.fixture
+def profile_file(tmp_path, profile):
+    path = tmp_path / "profile.json"
+    path.write_text(profile.model_dump_json())
+    return path
 
 
 @pytest.fixture
@@ -430,7 +436,7 @@ def test_explicit_migration_leaves_garmin_tables_unchanged(tmp_path):
 
 
 def test_registration_and_rotation_write_private_token_file_not_stdout(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, profile_file
 ):
     settings = Settings(_env_file=None, data_dir=tmp_path / "data")
     token_file = tmp_path / ".secrets" / "device.json"
@@ -442,7 +448,7 @@ def test_registration_and_rotation_write_private_token_file_not_stdout(
         "--profile-id",
         "synthetic-profile",
         "--profile-file",
-        str(FIXTURES / "environment-profile.json"),
+        str(profile_file),
         "--token-file",
         str(token_file),
     ]
@@ -469,20 +475,20 @@ def test_registration_and_rotation_write_private_token_file_not_stdout(
         rotate_device_token(settings, "synthetic-device", rotated)
 
 
-def test_profile_is_immutable_and_registration_never_overwrites_token(settings, tmp_path, profile):
+def test_profile_is_immutable_and_registration_never_overwrites_token(
+    settings, tmp_path, profile, profile_file
+):
     path = tmp_path / ".private" / "duplicate.json"
     with pytest.raises(storage.EnvironmentError, match="device_already_registered"):
         register_device(
             settings,
             "synthetic-device",
             "synthetic-profile",
-            FIXTURES / "environment-profile.json",
+            profile_file,
             path,
         )
     assert not path.exists()
-    register_profile(
-        settings, "synthetic-device", "synthetic-profile", FIXTURES / "environment-profile.json"
-    )
+    register_profile(settings, "synthetic-device", "synthetic-profile", profile_file)
     changed = profile.model_copy(update={"placement_id": "new-placement"})
     with pytest.raises(storage.EnvironmentError, match="profile_conflict"):
         storage.add_profile(settings.data_dir, "synthetic-device", "synthetic-profile", changed)

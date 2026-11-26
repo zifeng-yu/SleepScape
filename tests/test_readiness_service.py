@@ -8,11 +8,12 @@ from pathlib import Path
 from urllib.request import OpenerDirector
 
 import pytest
+from environment_samples import sample_profile
 from fastapi.testclient import TestClient
 
 from sleepscape.app import create_app
 from sleepscape.config import Settings
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
 from sleepscape.services import readiness
 from sleepscape.services.analysis_views import analysis_view
@@ -85,9 +86,7 @@ def data(tmp_path):
         store("daily_summaries", "2025-12-31", [("daily_summary", {"average_stress": 0})])
         repo.finish_run(run, "completed", {})
     batch = json.loads((FIXTURES / "environment-batch.json").read_text())
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     environment.register_local(settings.data_dir, batch["device_id"], "synthetic-profile", profile)
     environment.ingest(
         settings.data_dir, batch["device_id"], EnvironmentBatch.model_validate(batch)

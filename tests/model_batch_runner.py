@@ -21,6 +21,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
 from sleepscape.domain.sleep_features import SleepAnalysisError
+from sleepscape.domain.weekly_review import night_observations
 from sleepscape.models.audit import safe_usage
 from sleepscape.models.base import (
     ERROR_CODES,
@@ -78,15 +79,16 @@ def _digest(value):
 
 def _template(request, payload):
     if (
-        len(request.messages) != 3
-        or [m.role for m in request.messages] != ["system", "user", "user"]
-        or strict_json(request.messages[1].content) != payload
+        len(request.messages) != 2
+        or [m.role for m in request.messages] != ["system", "user"]
+        or strict_json(request.messages[1].content)
+        != {"target_date": payload["night_date"], "nights": [night_observations(payload)]}
     ):
         raise BatchEvaluationError("batch_request_template_invalid")
     return {
         "messages": [
             {"role": request.messages[index].role, "content": request.messages[index].content}
-            for index in (0, 2)
+            for index in (0,)
         ],
         "schema_name": request.schema_name,
         "schema": request.output_schema,

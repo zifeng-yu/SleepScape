@@ -8,7 +8,8 @@ from pathlib import Path
 from sleepscape.domain.analysis_readiness import evaluate_readiness
 from sleepscape.domain.daily import instant
 from sleepscape.domain.dashboard_dates import require_visible_night
-from sleepscape.domain.weekly_review import build_evidence, nightly_evidence, review_dates
+from sleepscape.domain.sleep_features import build_sleep_input
+from sleepscape.domain.weekly_review import night_observations, review_dates
 from sleepscape.models.audit import safe_usage
 from sleepscape.models.base import ModelError
 from sleepscape.models.settings import configuration_fingerprint, load_model_settings
@@ -19,6 +20,7 @@ from sleepscape.services.sleep_analysis import CORRECTION_ERRORS, MAX_RETRY_WAIT
 from sleepscape.services.views import DashboardService
 from sleepscape.storage import model_runtime as runtime
 from sleepscape.storage import weekly_review as store
+from sleepscape.storage.model_exchange import logged_request, validation_event
 from sleepscape.storage.morning_feeling import read_range
 from sleepscape.storage.reader import DashboardReader, StorageReadError
 from sleepscape.storage.usage import CapacityError
@@ -35,18 +37,18 @@ def _names(days):
     return [day.isoformat() for day in days]
 
 
-def _snapshot(settings, reader, days, clock):
+def _snapshot(settings, reader, days, clock, *, historical=False):
     view = DashboardService(settings)
     view._now = lambda: clock
     context = view.readiness_context(reader, days[0], days[-1])
-    feeling_state, feelings = read_range(reader.connection, days[0], days[-1])
+    _, feelings = read_range(reader.connection, days[0], days[-1])
     entries, origins, groups = [], [], {}
     failures = []
-    for index, day in enumerate(days, 1):
-        night = view.readiness_night(reader, day, context=context, optional=False)
+    for day in days:
+        night = view.readiness_night(reader, day, context=context)
         environment = _environment(settings, reader, night, clock)
         result = evaluate_readiness(
-            day, night, environment, now=clock, lookback_days=settings.garmin_lookback_days
+            day, night, environment, now=clock, lookback_days=max(7, settings.garmin_lookback_days)
         )
         if not result["core_ready"]:
             failures.append(
@@ -64,18 +66,23 @@ def _snapshot(settings, reader, days, clock):
                 }
             )
             continue
-        entry, identity = nightly_evidence(
-            day, night, environment, result, now=clock, zone=view.zone
+        payload = build_sleep_input(
+            day,
+            night,
+            environment,
+            result,
+            data_cutoff_at=clock,
+            allow_expired=historical,
+            morning_feeling=feelings.get(day.isoformat()),
+        )
+        identity = tuple(
+            sorted(
+                (item["device_ref"], item["source_ref"], item["placement_ref"])
+                for item in environment["sources"]
+            )
         )
         group = groups.setdefault(identity, f"G{len(groups) + 1}")
-        entries.append(
-            {
-                "id": f"N{index}",
-                **entry,
-                "feeling": feelings.get(day.isoformat()),
-                "environment_group": group,
-            }
-        )
+        entries.append({**night_observations(payload), "environment_group": group})
         origins.append(
             {
                 "identity": identity,
@@ -87,11 +94,17 @@ def _snapshot(settings, reader, days, clock):
         )
     if failures:
         return None, None, failures
-    evidence = build_evidence(entries, feeling_state)
-    # Pair checks are derived from these same facts. Preserve the existing
-    # source fingerprint when only the report contract changed.
-    source = {key: value for key, value in evidence.items() if key != "pair_checks"}
-    return evidence, store.digest(_semantic([source, origins])), []
+    evidence = {
+        "target_date": days[-1].isoformat(),
+        "window": {
+            "start_date": days[0].isoformat(),
+            "end_date": days[-1].isoformat(),
+            "visible_n": len(days),
+            "eligible_n": len(entries),
+        },
+        "nights": entries,
+    }
+    return evidence, store.digest(_semantic([evidence, origins])), []
 
 
 def prepare_review(settings):
@@ -199,15 +212,25 @@ def _generate(settings, days, clock, now_fn, ledger, *, caller, deadline):
     began = time.monotonic()
     usage = {}
     try:
+        request = logged_request(
+            request,
+            directory,
+            started_at.astimezone(runtime.ZONE).date(),
+            "weekly",
+            days[-1],
+            request_id,
+        )
         reply = caller(model, request)
         usage = safe_usage(reply.usage)
         content = parse_output(reply.text, evidence)
+        validation_event(request)
     except Exception as exc:
         error = exc if isinstance(exc, ModelError) else ModelError("model_operation_failed")
         ledger.finish(
             request_id, now_fn(), int((time.monotonic() - began) * 1000), error=error, usage=usage
         )
         store.finish(directory, end, "failed", error.code)
+        validation_event(request, error)
         result = _status("failed", code=error.code, calls=1)
         delay = error.retry_after if error.retry_after is not None else 1
         if error.code in RETRY_ERRORS and (error.retryable or error.code in CORRECTION_ERRORS):
@@ -343,13 +366,16 @@ def review_view(settings, day: date, *, now=None):
                 source_hash = stored.pop("source_hash")
                 result["report"] = stored
                 try:
-                    _, fingerprint, incomplete = _snapshot(settings, reader, days, clock)
-                    result["source_changed"] = bool(incomplete) or fingerprint != source_hash
+                    if "target_date" in stored["evidence"]:
+                        _, fingerprint, incomplete = _snapshot(
+                            settings, reader, days, clock, historical=True
+                        )
+                        result["source_changed"] = bool(incomplete) or fingerprint != source_hash
                 except Exception:
                     pass
             elif run["state"] == "incomplete_data":
                 try:
-                    _, _, incomplete = _snapshot(settings, reader, days, clock)
+                    _, _, incomplete = _snapshot(settings, reader, days, clock, historical=True)
                     result.update(
                         state="incomplete_data" if incomplete else "ready",
                         incomplete=incomplete,

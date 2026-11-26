@@ -22,7 +22,8 @@ from sleepscape.domain.environment_time import (
     build_time_mapper,
     utc_to_us,
 )
-from sleepscape.storage.environment import EnvironmentError, _connect, _secure
+from sleepscape.storage.environment import EnvironmentError, _connect
+from sleepscape.storage.repository import secure_database_files
 
 INDEX_TABLES = (
     "environment_index_schema",
@@ -172,7 +173,7 @@ def migrate_index(data_dir: Path) -> dict:
             except Exception:
                 connection.rollback()
                 raise
-        _secure(data_dir)
+        secure_database_files(data_dir)
         return {"status": "initialized", "schema_version": INDEX_VERSION}
     except EnvironmentError:
         raise
@@ -347,7 +348,7 @@ def rebuild_index(data_dir: Path, *, force: bool = False) -> dict:
                 "COALESCE(SUM(unknown_count),0),COALESCE(SUM(conflict_count),0),"
                 "COALESCE(SUM(source_revision>indexed_revision),0) FROM environment_index_boots"
             ).fetchone()
-        _secure(data_dir)
+        secure_database_files(data_dir)
         return {
             "status": "ready" if counts[4] == 0 else "pending",
             "schema_version": INDEX_VERSION,

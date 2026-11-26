@@ -7,8 +7,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from environment_samples import sample_profile
 
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.storage import environment
 from sleepscape.storage.environment_index import migrate_index, rebuild_index
 from sleepscape.storage.environment_reader import WINDOW_SQL, EnvironmentReader, instant_us
@@ -22,9 +23,7 @@ START = datetime(2026, 1, 1, tzinfo=UTC)
 @pytest.fixture
 def seeded(tmp_path):
     data_dir = tmp_path / "synthetic"
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     payload = json.loads((FIXTURES / "environment-batch.json").read_bytes())
     environment.register_local(data_dir, payload["device_id"], "synthetic-profile", profile)
     environment.ingest(data_dir, payload["device_id"], EnvironmentBatch.model_validate(payload))
@@ -59,9 +58,7 @@ def test_unmigrated_environment_is_reported_without_implicit_migration(tmp_path)
 
 
 def test_unmigrated_status_does_not_scan_received_history(tmp_path):
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     environment.register_local(tmp_path, "synthetic-device", "synthetic-profile", profile)
     with EnvironmentReader(tmp_path) as reader:
         queries = []

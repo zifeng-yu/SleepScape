@@ -1,6 +1,7 @@
 """Small model protocol and safe typed errors, independent from sleep business logic."""
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Protocol
 
 TRANSPORT_NORMALIZATIONS = frozenset({"none", "json_string_envelope", "single_object_array"})
@@ -129,6 +130,7 @@ class ModelRequest:
     output_schema: dict = field(repr=False)
     schema_name: str = "sleep_response"
     max_completion_tokens: int | None = None
+    exchange_path: Path | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

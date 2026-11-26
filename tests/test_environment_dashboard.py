@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.request import OpenerDirector
 
 import pytest
+from environment_samples import sample_profile
 from fastapi.testclient import TestClient
 
 from sleepscape.app import create_app
@@ -30,9 +31,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def fixture(tmp_path, monkeypatch):
     settings = Settings(_env_file=None, data_dir=tmp_path / "data", demo=True)
     payload = json.loads((FIXTURES / "environment-batch.json").read_text())
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_text()
-    )
+    profile = sample_profile()
     monkeypatch.setattr(environment, "_now", lambda: "2026-01-02T01:00:00Z")
     monkeypatch.setattr(OpenerDirector, "open", lambda *_args, **_kwargs: pytest.fail("no network"))
     environment.register_local(

@@ -24,8 +24,6 @@ from sleepscape.models.settings import configuration_fingerprint, load_model_set
 from sleepscape.resources import (
     contract_schema,
     prompt_metadata,
-    validate_model_output,
-    validate_sleep_input,
 )
 from sleepscape.services import daily, readiness
 from sleepscape.services import sleep_analysis as service
@@ -80,39 +78,17 @@ def prepared(configured):
 
 
 def response_for(request):
-    """Read the real anonymous evidence from the request; satisfy the actual business validator."""
-    payload = json.loads(next(m.content for m in request.messages if m.role == "user"))
-    validate_sleep_input(payload)
-    ids = {row["metric"]: row["id"] for row in payload["facts"]}
-    refs = {
-        "sleep": [ids["sleep.total_minutes"]],
-        "body_signals": [ids["sleep.average_heart_rate"], ids["sleep.night_average_hrv"]],
-        "previous_day": [ids["previous.training_load"], ids["previous.average_stress"]],
-        "environment": [ids["environment.temperature_mean"], ids["environment.sound_energy_mean"]],
-    }
+    data = json.loads(request.messages[1].content)
+    night = data["nights"][-1]
+    assert data["target_date"] == night["night_date"]
     result = {
-        "summary": {
-            "text": "手表只记下一小段睡眠，单凭时长还说不清醒来时的感受。",
-            "evidence_ids": refs["sleep"].copy(),
-        },
-        "observations": [
-            {
-                "category": category,
-                "text": "环境有缺采，难以判断缺口中的声音变化。"
-                if category == "environment" and payload["completeness"]["warnings"]
-                else "已有该类观测，仅描述提供的证据；暂不推断因果关系。",
-                "evidence_ids": evidence,
-            }
-            for category, evidence in refs.items()
-        ],
-        "hypotheses": [],
-        "actions": [],
+        "summary": {"text": "这晚睡眠较短，手表记录 2 分钟。"},
+        "garmin": "结合时长和分期解读。",
+        "environment": "这段窗口中有环境记录。",
+        "feeling": "结合晨起记录。" if night["morning_feeling"] else None,
+        "possible_reasons": ["睡眠机会可能受限，仅凭这些记录无法确定。"],
+        "comparison": "结合之前夜晚观察。" if len(data["nights"]) > 1 else None,
     }
-    if feeling := payload.get("morning_feeling"):
-        label = {"good": "较好", "fair": "一般", "poor": "较差"}[feeling["value"]]
-        result["summary"]["text"] = f"晨起睡感{label}。" + result["summary"]["text"]
-        result["summary"]["evidence_ids"].append(feeling["id"])
-    validate_model_output(result, payload)
     return ModelResult(
         json.dumps(result, ensure_ascii=False), "qwen3.8-max", "stop", {"total_tokens": 40}
     )
@@ -125,22 +101,15 @@ def good_caller(_model, request):
 @pytest.mark.parametrize("correction", [False, True])
 def test_schema_visible_in_prompt_and_maximum_input_fits_messages(configured, correction):
     settings, _ = configured
-    payload = {"synthetic_padding": ""}
-    overhead = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode())
-    payload["synthetic_padding"] = "x" * (24 * 1024 - overhead)
+    complete(configured)
+    payload = read_snapshot(settings, DAY, now=NOW)["input"]
     request = service._request(payload, correction=correction)
-    schema = contract_schema("model_output")
-    assert request.output_schema == schema
-    encoded_schema = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-    assert request.messages[0].content.endswith(encoded_schema)
-    assert all(field in request.messages[2].content for field in schema["required"])
-    assert set(schema["required"]) == {"summary", "observations", "hypotheses", "actions"}
-    assert not any(
-        field in encoded_schema for field in ("input_hash", "input_quality_state", "evidence_level")
-    )
+    assert request.output_schema == contract_schema("model_output")
+    assert len(request.messages) == (3 if correction else 2)
+    assert "input_hash" not in request.messages[1].content
+    assert "comparison_text" not in request.messages[1].content
     assert sum(len(message.content.encode()) for message in request.messages) <= MAX_MESSAGE_BYTES
-    wire, original = _payload(load_model_settings(settings), request)
-    assert original == schema and len(wire) < 64 * 1024
+    _payload(load_model_settings(settings), request)
 
 
 def run(settings, **kwargs):
@@ -332,18 +301,11 @@ def test_report_metadata_is_assembled_from_trusted_input_without_rewriting_model
     assert result["results"][0]["state"] == "complete"
     report = store.read_report(settings.data_dir, str(DAY))
     source, output = report["input"]["payload"], report["output"]
-    assert output["schema_version"] == "sleep-output-1" and output["status"] == "complete"
+    assert output["schema_version"] == "sleep-interpretation-1" and output["status"] == "complete"
     assert output["night_date"] == source["night_date"]
     assert output["input_hash"] == source["input_hash"]
     assert output["input_quality_state"] == source["completeness"]["quality_state"]
-    assert output["limitations"] == source["required_limitations"]
-    assert output["summary"] == responses[0]["summary"]
-    assert output["actions"] == responses[0]["actions"]
-    assert output["hypotheses"] == responses[0]["hypotheses"]
-    assert [
-        {key: value for key, value in row.items() if key != "evidence_level"}
-        for row in output["observations"]
-    ] == responses[0]["observations"]
+    assert all(output[k] == v for k, v in responses[0].items())
 
 
 @pytest.mark.parametrize(
@@ -370,7 +332,7 @@ def test_wire_cannot_supply_internal_metadata_even_if_other_content_is_valid(
 
     result = service.run_analysis(settings, day=DAY, now=NOW, caller=caller, sleeper=lambda _: None)
     assert result["results"][0]["state"] == "failed"
-    assert result["results"][0]["code"] == "output_business_mismatch"
+    assert result["results"][0]["code"] == "output_schema_mismatch"
     assert result["model_calls"] == 10
     assert counts(settings)["sleep_analysis_reports"] == 0
 
@@ -378,12 +340,9 @@ def test_wire_cannot_supply_internal_metadata_even_if_other_content_is_valid(
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda value: value["summary"].update(evidence_ids=["F999"]),
-        lambda value: value["summary"].update(text="心率为99，这是未经证据支持的数字。"),
-        lambda value: value["observations"].pop(),
-        lambda value: value.update(observations=[]),
-        lambda value: value["observations"][0].update(evidence_level="moderate"),
-        lambda value: value["summary"]["evidence_ids"].append(value["summary"]["evidence_ids"][0]),
+        lambda value: value.update(garmin=None),
+        lambda value: value.pop("environment"),
+        lambda value: value.update(possible_reasons="wrong type"),
     ],
 )
 def test_invalid_wire_references_text_and_categories_are_rejected_without_repair(prepared, mutate):
@@ -397,7 +356,7 @@ def test_invalid_wire_references_text_and_categories_are_rejected_without_repair
 
     result = service.run_analysis(settings, day=DAY, now=NOW, caller=caller, sleeper=lambda _: None)
     assert result["results"][0]["state"] == "failed"
-    assert result["results"][0]["code"] == "output_business_mismatch"
+    assert result["results"][0]["code"] == "output_schema_mismatch"
     assert result["model_calls"] == 10
     assert counts(settings)["sleep_analysis_reports"] == 0
 
@@ -536,7 +495,7 @@ def test_safe_validation_reason_is_audited_and_one_correction_can_succeed(prepar
     attempts = store.read_attempts(settings.data_dir, str(DAY))
     assert next(row for row in attempts if row["state"] == "failed")["error_code"] == code
     assert runtime.read_state(settings.data_dir)["attempts"][0]["code"] == code
-    assert "上次输出未通过" in calls[-1].messages[-1].content
+    assert "JSON Schema" in calls[-1].messages[-1].content
 
 
 def test_last_allowed_attempt_preserves_failure_instead_of_returning_successful_block(prepared):
@@ -600,7 +559,7 @@ def test_retry_is_bounded_and_corrections_do_not_reuse_untrusted_output(prepared
         assert len(calls) == result["model_calls"] == 2 and delays == [1]
         assert result["results"][0]["state"] == "complete"
         if failure != "network":
-            assert len(calls[-1].messages) == 4
+            assert len(calls[-1].messages) == 3
     assert runtime.budget(runtime.read_state(settings.data_dir), NOW)["used"] == len(calls)
 
 
@@ -693,7 +652,7 @@ def test_current_then_oldest_ready_nights_are_not_blocked_by_old_two_night_limit
     called = []
 
     def caller(model, request):
-        called.append(json.loads(request.messages[1].content)["night_date"])
+        called.append(json.loads(request.messages[1].content)["target_date"])
         return response_for(request)
 
     result = service.run_analysis(settings, now=NOW, caller=caller)
@@ -718,7 +677,7 @@ def test_success_stops_remaining_night_attempts_and_later_execution(prepared, su
     assert result["model_calls"] == successful_call
     assert result["results"][0]["state"] == "complete"
     assert len(delays) == successful_call - 1
-    assert all(len(request.messages) == 4 for request in calls[1:])
+    assert all(len(request.messages) == 3 for request in calls[1:])
     attempts = store.read_attempts(settings.data_dir, str(DAY))
     assert len(attempts) == successful_call
     assert sum(row["state"] == "failed" for row in attempts) == successful_call - 1
@@ -771,7 +730,7 @@ def test_three_failed_nights_share_thirty_calls_and_fourth_is_deferred(prepared)
     calls = []
 
     def failed(_model, request):
-        calls.append(json.loads(request.messages[1].content)["night_date"])
+        calls.append(json.loads(request.messages[1].content)["target_date"])
         raise ModelError("output_schema_required")
 
     result = service.run_analysis(settings, now=NOW, caller=failed, sleeper=lambda _: None)

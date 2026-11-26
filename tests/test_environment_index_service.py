@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 import requests
+from environment_samples import sample_profile
 
 from sleepscape.config import Settings
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
 from sleepscape.services import environment_index as service
 from sleepscape.services.backup import BackupError
@@ -38,9 +39,7 @@ def isolated(monkeypatch, tmp_path):
 @pytest.fixture
 def settings(tmp_path):
     settings = Settings(_env_file=None, data_dir=tmp_path / "data")
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     storage.register_local(settings.data_dir, "synthetic-device", "synthetic-profile", profile)
     batch = EnvironmentBatch.model_validate_json((FIXTURES / "environment-batch.json").read_bytes())
     storage.ingest(settings.data_dir, "synthetic-device", batch)

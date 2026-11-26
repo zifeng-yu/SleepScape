@@ -69,7 +69,7 @@
 - Python依赖更新 `pyproject.toml`/`uv.lock`，浏览器验收依赖更新 `package.json`/`package-lock.json`；不手改锁文件或保留平行依赖清单。
 - 云端公开程序安装须在专用安装进程使用`umask 022`，保持root管理的代码/依赖可由`sleepscape`服务用户读取和遍历；以该用户在生产工作目录完成模块导入和`create_app()`预检后才重启Web。不得把安装掩码用于私有配置或放宽`.env`/凭据的600、私有目录700及服务运行`UMask=0077`。发布失败先恢复服务，不用root导入成功替代服务用户核验。
 - 保留必要的回归测试。程序修改后运行 `make check`；前端交互/静态模块修改运行 `make browser-check`；固件/上传协议变化另运行`make firmware-check`及`make firmware-build`。
-- 模型批测在tests层使用可复现合成输入及生产Prompt/校验器。普通pytest必须跳过真实模型调用；只有用户明确授权本次调用数量后，任务级启动器才可注入live评估器，每例一次且总数不超授权，预留/失败/中断均留审计。不能中途修改模板后混算通过率；模型Schema通过与完整业务通过分别报告，不能将测试额度扩展成生产预算绕过入口。
+- 模型批测在tests层使用可复现合成输入及生产Prompt/校验器。普通pytest必须跳过真实模型调用；只有用户明确授权本次调用数量后，任务级启动器才可注入live评估器，每例一次且总数不超授权，预留/失败/中断均留审计。不能中途修改模板后混算通过率；分别报告回答 Schema 校验与报告组装结果，不能将测试额度扩展成生产预算绕过入口。
 - 浏览器依赖被清理后先运行 `make browser-install`；合成服务入口为 `tests/browser/serve_demo.py`。
 - 归一化或存储变化另验真实字段/重放与失败保护，不因已有合成测试就声称真实数据已通过。
 - 先验证再清理：`make clean`删除测试结果/构建产物/代码缓存，`make clean-dev`另删Node依赖和浏览器缓存；保留可运行的`.venv`。
@@ -81,9 +81,7 @@
 
 - 双源完整性只计算当前策略，门槛与光照短暂通信异常的例外只维护于data-contract.md。分析资格与真实完整率独立，with_gaps保留缺口和限制。旧策略的审计和报告按原合同读取、备份并保留原证据。发布证据见核验报告；真实采样计数和时段仅存私有报告及受保护页面，不复制到公开文档。
 
-- 逐夜特征和陈述依据分别由domain/sleep_features.py与domain/sleep_claims.py维护，资源IO和Schema校验为resources/；Schema/Prompt只在包内维护，文档链接引用，不保留复制稿。services/sleep_inputs.py同快照读取当前与30日基线；services/sleep_analysis.py负责预算、重试、来源核对和唯一发布；storage/sleep_analysis.py负责报告四表及可选手动修订。外呼前结束SQLite事务，发布写事务内再核对资格/输入/来源/配置，不把模型锁等同数据库锁。
+- 逐夜观测由 domain/sleep_features.py 构造，两类报告共用 domain/weekly_review.py 的观测投影，资源IO和Schema校验为resources/；Schema/Prompt只在包内维护，文档链接引用，不保留复制稿。services/sleep_inputs.py同快照读取目标夜观测；services/sleep_analysis.py负责预算、重试、来源核对和唯一发布；storage/sleep_analysis.py负责报告四表及可选手动修订。外呼前结束SQLite事务，发布写事务内再核对资格/输入/来源/配置，不把模型锁等同数据库锁。
 - sleep-analysis-prepare先备份与临时恢复核验，再显式创建sleep_analysis_schema/analysis_inputs/analysis_attempts/sleep_analysis_reports；与原检查三表独立。输入/成功报告不可改删，尝试只从running转终态，不删历史绕过每晚唯一或预算。备份含存在的新表及载荷/引用校验；普通GET/启动/日任务不迁移。
-- 复盘由 `services/weekly_review.py` 复用当前双源核验、睡感和 P1 调用。独立包内 Prompt/Schema，对实际窗口逐夜检查，任何日期未通过则明示缺项且零复盘调用。历史中位数只按观测计算。复盘审计升级用 `sleep-review-prepare` 先备份和临时恢复，重试时保留失败请求、输入与错误码。
-- 当夜解读与 7 日复盘共享 P1 的上海自然日 30 次物理预算。逐夜沿用每夜累计 10 次上限；复盘在同日剩余额度及任务时限内重试可恢复失败。失败、超时及中断保留审计并占额度。遵守 Retry-After，超过 30 秒留待后续；认证、配置及能力错误停止调用。Schema 诊断只存固定安全码，业务失败为 `output_business_mismatch`。已发布报告保留原证据及来源变化提示；逐夜显式重读按运行手册执行。09:00 服务总时限 2 小时。预算、执行状态和恢复口径只维护在数据契约。
-- 模型仅收24KiB以内白名单证据。唯一Schema文件内model_output是四字段模型返回合同，output是完整持久报告合同；并非两套版本。Prompt精简，只要求summary/observations/hypotheses/actions及有效引用；已知日期/hash/质量/限制/状态由程序从已核验输入填入，观察/假设等级固定limited。先校验模型返回，再确定性组装，最后严格校验完整报告和领域规则；不得补写正文/类别/引用或裁掉超额条目。内部sleep-output-1、看板和备份合同保持兼容，缺类/空观察/模型拒绝不发布。
-- 数值由证据卡展示，生成文字不写阿拉伯数字、确定因果或医疗处置；with_gaps正文保留缺采限制，不能冒称100%。system动态附唯一model_output Schema；证据与固定生成/纠错要求分user消息，不接受数据指令。最大输入加纠错仍须通过32KiB边界。当前显式json_object，可配置json_schema及aliyun-compatible-1，不自动切换；各合同、Prompt摘要与配置指纹保留。传输只允许根字符串解析一次为对象或单对象根数组取出，不能组合/递归或取多对象数组首项；随后全部校验。成功metadata可记录固定规范化标记，实际是否发生以核验为准。规则不替代真实语义对照，字段和预算唯一维护于数据契约。
+- 复盘由 `services/weekly_review.py` 逐日核验实际窗口。任一夜资格不足时列出缺项，复盘零调用。两类报告共用回答 Schema 和 P1 的预算、锁、限流与诊断。字段、额度、重试和发布条件见[数据契约](docs/data-contract.md#7-日复盘总结合同)，迁移、显式重读和失败排查见[运行手册](docs/operations.md#睡眠报告生成)。
+- 逐夜只解读目标夜，七日复盘另用前六晚同口径观测对照。模型负责判断睡眠质量、结合可选睡感解释可能原因。正文只验 JSON Schema。保留历史报告、原始证据、失败审计和备份的可读性。

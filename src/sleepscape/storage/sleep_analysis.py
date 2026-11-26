@@ -14,6 +14,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sleepscape.models.base import OUTPUT_SCHEMA_ERRORS, TRANSPORT_NORMALIZATIONS
+from sleepscape.storage.repository import secure_database_files
 from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 REPORT_VERSION = 1
@@ -354,13 +355,6 @@ def _database(data_dir, *, writable=False):
             connection.close()
 
 
-def _secure(data_dir):
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        path = Path(data_dir) / ("sleepscape.sqlite3" + suffix)
-        if path.exists():
-            path.chmod(0o600)
-
-
 @contextmanager
 def _write(data_dir, required_bytes=0):
     try:
@@ -370,7 +364,7 @@ def _write(data_dir, required_bytes=0):
             if not report_available(c):
                 _fail("sleep_analysis_not_initialized")
             yield c
-        _secure(data_dir)
+        secure_database_files(data_dir)
     except SleepAnalysisStorageError:
         raise
     except CapacityError:
@@ -395,7 +389,7 @@ def migrate_reports(data_dir):
                 "INSERT INTO sleep_analysis_schema VALUES (?,?)", (REPORT_VERSION, _instant())
             )
             report_available(c)
-        _secure(data_dir)
+        secure_database_files(data_dir)
         return {"status": "initialized", "schema_version": REPORT_VERSION}
     except SleepAnalysisStorageError:
         raise

@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 import requests
+from environment_samples import sample_profile
 
 from sleepscape.config import Settings
 from sleepscape.domain.environment import (
     EnvironmentBatch,
-    MeasurementProfile,
     canonical_json,
     content_hash,
 )
@@ -44,9 +44,7 @@ def payload():
 @pytest.fixture
 def settings(tmp_path):
     settings = Settings(_env_file=None, data_dir=tmp_path / "data")
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     facts.register_local(settings.data_dir, "synthetic-device", "synthetic-profile", profile)
     return settings
 
@@ -176,9 +174,7 @@ def test_new_profile_stays_bound_to_its_record_without_rewriting_old_profile(set
     index.migrate_index(settings.data_dir)
     ingest(settings, payload)
     first_profile = rows(settings, "environment_profiles")
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    ).model_copy(update={"placement_id": "synthetic-second-placement"})
+    profile = sample_profile().model_copy(update={"placement_id": "synthetic-second-placement"})
     facts.add_profile(settings.data_dir, "synthetic-device", "second-profile", profile)
     newer = copy.deepcopy(payload)
     newer.update(time_anchors=[], device_status=None)

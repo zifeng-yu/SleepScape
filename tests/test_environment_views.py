@@ -6,9 +6,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from environment_samples import sample_profile
 
 from sleepscape.config import Settings
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.services.environment_views import EnvironmentViewService
 from sleepscape.storage import environment
 from sleepscape.storage.environment_index import migrate_index, rebuild_index
@@ -19,9 +20,7 @@ START = datetime(2026, 1, 1, tzinfo=UTC)
 
 @pytest.fixture
 def view(tmp_path, monkeypatch):
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     payload = json.loads((FIXTURES / "environment-batch.json").read_bytes())
     settings = Settings(_env_file=None, data_dir=tmp_path / "synthetic", demo=True)
     monkeypatch.setattr(environment, "_now", lambda: "2026-01-01T00:01:01Z")

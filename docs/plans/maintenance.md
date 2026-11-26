@@ -4,17 +4,7 @@
 
 ## 分层与入口
 
-| 位置 | 当前职责 |
-| --- | --- |
-| `domain/maintenance.py`、`domain/retention.py` | 纯磁盘水位、操作许可、份数/日期/容量保留决策 |
-| `storage/usage.py` | 系统盘和数据盘只读statvfs、固定文件大小、共享容量准入及磁盘满错误识别 |
-| `storage/backup_manifest.py` | 私有维护账本、受控清单、严格结构、原子写入、独立进程锁 |
-| `services/backup.py` | 保留原手动SQLite备份/恢复检查，并接入容量预检 |
-| `services/backup_bundle.py` | SQLite与模型/每日运行/冷却状态的一致快照、文件摘要和恢复核验 |
-| `services/maintenance.py` | 同日幂等、显式失败重试、备份→导出→保留、崩溃恢复、只读状态 |
-| `adapters/backup_export.py`、`backup_export_worker.py` | 路径与严格SSH传输、目标核验、不可变发布、受控目标保留；有界子进程/流式复制 |
-| CLI、`deploy/maintenance.service`/`.timer` | `maintenance-run [--plan-only或--retry]`、`maintenance-status`、`maintenance-restore-check ID`；云端04:00 Asia/Shanghai定时器已启用 |
-| `services/views.py`、`web/static/maintenance.js` | 独立维护卡；任务、备份、目标、磁盘状态白名单，无路径或凭据 |
+维护服务负责当日幂等、失败重试、备份、导出和保留。CLI 及看板的入口见[运行手册](../operations.md#自动维护与离机配置)，程序模块与依赖见[架构](../architecture.md#程序分层)。
 
 维护使用独立`.maintenance.lock`。取得成套快照时短暂获取现有Garmin及模型进程锁；正在采集/调用模型则维护明确报忙，不打断任务。SQLite一致读快照仍允许环境独立WAL摄取；复制后释放采集/模型锁，再做完整校验、恢复检查和网络导出。维护锁不变成全应用写锁。任务20分钟systemd上限和导出总超时用于终止异常；目标机首次恢复核验已通过，长期耗时与资源仍须测量。
 
@@ -58,9 +48,7 @@
 
 ## 一年容量预算与验证
 
-既有约1.3GB/年的环境SQLite外推不包含P2 UTC派生索引、Garmin、模型输入/输出/attempt、备份、WAL、系统依赖。P2已有年度分钟数据索引实测，场景不包含全年声音事件和接收审计，结果统一见[核验报告](../verification.md)；两种测试不能相加或互相替代为全年总量。模型请求预算见数据契约。容量按实际持久化的输入、成功报告、修订、尝试及备份增长验收；单次响应上限不能直接用作每次落盘大小。
-
-部署前以一年合成数据测查询计划、DB和索引增长；部署后第7和第30天复核实际日增量。公式为：系统占用＋一年事实/派生/LLM证据预测＋有效备份＋WAL/日志临时空间＋至少25%余量。超过20GB时比较保留策略及扩盘，不先假定CPU/内存升级能解决磁盘。
+容量预算以持久化输入、成功报告、修订、尝试及备份的实际增量为准。单次模型响应上限不能用作落盘增量。年度预算、复核周期和服务器验收指标统一见[资源预算与部署验收](../architecture.md#资源预算与部署验收)。
 
 ## 验收与外部条件
 

@@ -1,3 +1,4 @@
+import { appendInterpretation, validInterpretation } from "./interpretation.js";
 /* Validated model prose is always text. Evidence values come from the saved snapshot. */
 import { add, el } from "./dom.js";
 import { FEELING_LABELS } from "./morning-feeling.js";
@@ -56,6 +57,10 @@ const knownCount = (value) => Number.isSafeInteger(value) && value >= 0;
 
 function validReport(value, day) {
     const report = object(value), content = object(report.content), evidence = object(report.evidence);
+    if (content.schema_version === "sleep-interpretation-1") {
+        return report.night_date === day && content.night_date === day && content.status === "complete"
+            && instant(report.generated_at) && validInterpretation(content);
+    }
     if (report.night_date !== day || content.night_date !== day || content.status !== "complete" ||
         !instant(report.generated_at) || !["complete", "with_gaps"].includes(report.input_quality_state) ||
         content.input_quality_state !== report.input_quality_state ||
@@ -201,6 +206,12 @@ function reportSection(data, day, time, executionLabels, errorLabels) {
             "当前数据暂不可核对，无法确认报告依据是否变化。已发布报告和生成时证据仍保留。"));
     }
     const content = report.content, evidence = report.evidence;
+    if (content.schema_version === "sleep-interpretation-1") {
+        appendInterpretation(section, content);
+        section.append(el("p", "report-meta", `睡眠归属日 ${day} · 生成于 ${stamp(report.generated_at, time)}`));
+        return section;
+    }
+    section.append(el("p", "analysis-footnote", "历史报告 · 保留生成时的解读与引用"));
     const feeling = evidence.morning_feeling ? [evidence.morning_feeling] : [];
     const detail = el("details", "report-evidence");
     add(detail, el("summary", "", `生成时证据（${evidence.facts.length + evidence.timeline.length + evidence.events.length + feeling.length}项）`),

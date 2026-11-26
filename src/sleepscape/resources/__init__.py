@@ -9,7 +9,7 @@ from importlib.resources import files
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 
-PROMPT_VERSION = "sleep-observation-8"
+PROMPT_VERSION = "sleep-interpretation-1"
 
 
 @lru_cache(maxsize=1)
@@ -85,6 +85,15 @@ def validate_sleep_output(payload, input_payload):
 
     validate_sleep_input(input_payload)
     try:
+        if payload.get("schema_version") == PROMPT_VERSION:
+            fields = set(contract_schema("model_output")["required"])
+            metadata = _report_metadata(input_payload)
+            if set(payload) != fields | metadata.keys() or any(
+                payload[k] != v for k, v in metadata.items()
+            ):
+                raise SleepAnalysisError("invalid_analysis_output")
+            _validator("model_output").validate({k: payload[k] for k in fields})
+            return
         _validator("output").validate(payload)
         validate_output_semantics(payload, input_payload)
     except SleepAnalysisError:
@@ -93,17 +102,26 @@ def validate_sleep_output(payload, input_payload):
         raise SleepAnalysisError("invalid_analysis_output") from None
 
 
-def validate_model_output(payload, input_payload):
-    """Validate the small model answer and return the complete stored report."""
-    from sleepscape.domain.sleep_features import SleepAnalysisError, assemble_model_output
+def _report_metadata(source):
+    return {
+        "schema_version": PROMPT_VERSION,
+        "night_date": source["night_date"],
+        "input_hash": source["input_hash"],
+        "input_quality_state": source["completeness"]["quality_state"],
+        "status": "complete",
+    }
 
-    validate_sleep_input(input_payload)
+
+def validate_answer(candidate):
+    from sleepscape.models.base import ModelError
+
     try:
-        _validator("model_output").validate(payload)
-        report = assemble_model_output(payload, input_payload)
-        validate_sleep_output(report, input_payload)
-        return report
-    except SleepAnalysisError:
-        raise
-    except (ValidationError, ValueError, TypeError, KeyError, RecursionError):
-        raise SleepAnalysisError("invalid_analysis_output") from None
+        _validator("model_output").validate(candidate)
+    except ValidationError:
+        raise ModelError("output_schema_mismatch") from None
+    return candidate
+
+
+def validate_model_output(payload, input_payload):
+    validate_sleep_input(input_payload)
+    return _report_metadata(input_payload) | validate_answer(payload)

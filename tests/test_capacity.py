@@ -9,11 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from environment_samples import sample_profile
 from fastapi.testclient import TestClient
 
 from sleepscape.app import create_app
 from sleepscape.config import Settings
-from sleepscape.domain.environment import MeasurementProfile
 from sleepscape.domain.maintenance import GIB, MIB, capacity_permission, capacity_state
 from sleepscape.domain.models import DataRequest, FetchResult
 from sleepscape.models.base import ModelError
@@ -123,9 +123,7 @@ def env_config(tmp_path):
     settings = Settings(
         _env_file=None, data_dir=tmp_path.resolve() / "data", environment_ingest_enabled=True
     )
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     token = "synthetic_" + "q" * 43
     environment.register(settings.data_dir, "synthetic-device", "synthetic-profile", profile, token)
     return settings, token

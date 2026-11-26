@@ -16,6 +16,7 @@ from test_models import (  # Shared isolated fake transport; never makes a live 
     request,
     transport,
 )
+from test_sleep_features import example as read_report_example
 
 from sleepscape.models import ChatMessage, ModelError
 from sleepscape.models import openai_compatible as adapter
@@ -248,7 +249,7 @@ def test_real_report_schema_is_projected_without_replacing_local_contract(settin
 
 @pytest.fixture
 def report_output():
-    value = json.loads(Path("docs/contracts/sleep-analysis.example.json").read_text())["output"]
+    value = read_report_example()["output"]
     value["hypotheses"] = [
         {
             "factor": "sound",
@@ -688,7 +689,7 @@ def test_array_normalization_never_bypasses_strict_json(settings, monkeypatch, m
 def test_both_single_envelopes_preserve_canonical_report_and_business_validation(
     settings, monkeypatch, mode, normalization
 ):
-    example = json.loads(Path("docs/contracts/sleep-analysis.example.json").read_text())
+    example = read_report_example()
     expected = example["output"]
     content = json.dumps(
         json.dumps(expected) if normalization == "json_string_envelope" else [expected]

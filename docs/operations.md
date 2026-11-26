@@ -129,13 +129,13 @@ uv run --locked sleepscape sleep-analyze --live
 
 sleep-analysis-prepare先创建SQLite备份并临时恢复核验，再显式创建独立报告四表；已有合法表幂等返回。与analysis-prepare的检查三表不同，二者都不调用模型。缺表、半套表或版本错误须按安全错误排查，不能删表/证据重置。备份包含已存在的可选表并验证载荷与引用；迁移是否在目标机执行，以核验报告为准。
 
-sleep-analyze没有--live拒绝执行，不重新采集Garmin、不控制硬件，不自动迁移。只有窗口内ready且未有成功报告才进入证据/模型阶段；重复执行已有报告零请求。输出为固定状态/调用次数，完整输入、报告和尝试在私有SQLite保留。模型文字只解释方向，数值由看板证据卡展示；禁止把这些私有内容提交Git或复制到公共日志。
+sleep-analyze没有--live拒绝执行，不重新采集Garmin、不控制硬件，不自动迁移。只有窗口内ready且未有成功报告才进入证据/模型阶段；重复执行已有报告零请求。输出为固定状态/调用次数，完整输入、报告和尝试在私有SQLite保留。看板直接展示模型的判断、可能原因和观测解读；禁止把这些私有内容提交Git或复制到公共日志。
 
 自动路径复用同一个服务：在私有.env设置SLEEPSCAPE_LLM_ENABLED=true和SLEEPSCAPE_LLM_AUTOMATIC_ENABLED=true，并保留已配置的URL/Key路径。自动开关默认false；当前云端已获用户明确授权按现配置启用，生效以核验报告为准。云端更新后仅重启sleepscape.service使Web状态读取新配置，并安装最新garmin-sync.service模板、systemctl daemon-reload；该模板TimeoutStartSec=2h，容纳最多30次各180秒的模型调用及原采集、有限等待，不立即重跑已完成Garmin。不要另建重复09:00任务。
 
 所有合成/真实请求共享上海自然日30次持久额度；每个night_date跨输入、跨日累计最多10次，成功发布立即停止。历史失败、中断和其他已记录尝试继续计数，换输入或换日不清零；取消每天最多两个夜晚和同输入每日两次的旧限制。网络或结构纠错可在夜晚剩余次数及每日总额度内继续；遵守Retry-After，超过30秒不在本轮等待，后续执行仍须尊重未过冷却。配置/鉴权/模型能力错误先修正，不能删model-runtime或尝试审计绕过限制。夜晚累计10次后仍未成功则为blocked_attempts，没有强制解除CLI。若任务中断，保留占位及尝试，由后续受控执行标记中断并重新检查。
 
-发布前及发布事务内会重读来源/资格/配置；发生变化不展示旧候选。发布后源事实变化只显示source_changed，既有报告仍对应生成时证据且不自动修改；未知当前来源状态明确提示无法比较。页面没有生成按钮，刷新不花费请求额度。结构失败以固定output_schema_*错误码区分唯一项、必需包含、缺字段、固定值、类型及其他规则；业务校验失败为output_business_mismatch。只排查安全码及源数据状态，不要求保存或公开失败响应/校验值。一次失败用尽同输入剩余尝试时仍返回failed和原错误码，整轮partial、CLI非零；后续预检blocked_attempts表示没有新的调用，不是报告成功。模型失败不回滚采集事实；09:00 自然发布已核验，后续复查新版正文和长期稳定性。
+发布前及发布事务内会重读来源/资格/配置；发生变化不展示旧候选。发布后源事实变化只显示source_changed，既有报告仍对应生成时证据且不自动修改；未知当前来源状态明确提示无法比较。页面没有生成按钮，刷新不花费请求额度。结构失败以固定output_schema_*错误码区分唯一项、必需包含、缺字段、固定值、类型及其他规则；旧报告流程可能记录过 output_business_mismatch。排查逐夜或复盘失败时，在云端生产工作目录用服务账号运行 `sudo -u sleepscape ls data/llm-exchanges/`，以类型 nightly 或 weekly、报告归属日和请求 ID 对应 request、response、validation 三份 JSON。只在私有终端查看正文；权限、保留期和缺件含义见[数据契约](data-contract.md#私有模型请求与响应日志)。一次失败用尽同输入剩余尝试时仍返回failed和原错误码，整轮partial、CLI非零；后续预检blocked_attempts表示没有新的调用，不是报告成功。模型失败不回滚采集事实；09:00 自然发布已核验，后续复查新版正文和长期稳定性。
 
 ## 7 日复盘总结
 
@@ -145,7 +145,7 @@ sleep-analyze没有--live拒绝执行，不重新采集Garmin、不控制硬件�
 
 ## 模型配置与连接核验
 
-本机已经保存用户提供的模型地址和Key，并完成合成连接核验；无需重新粘贴。新机器或轮换时，将地址写入私有`.env`，Key保存到`SLEEPSCAPE_LLM_KEY_FILE`指定的普通文件（目录700、文件600，不允许符号链接）。不要把Key写入环境模板、终端参数或TOML。非敏感模型配置只维护`configs/models.toml`；安装包内的默认配置在构建时由该文件生成，无需维护第二份。 当前该文件显式配置response_mode="json_object"，同模型与私有URL/Key不变；schema_profile="aliyun-compatible-1"保留供可配置的json_schema模式使用。协议仅由显式配置选择，运行时不自动切换。JSON对象模式只保证JSON语法，system仍动态提供完整规范Schema，返回和发布仍需完整本地Schema与业务校验；不得删除规范约束。省略response_mode时默认json_schema，部署须包含当前TOML。实际生效与真实结果见核验报告。
+本机已经保存用户提供的模型地址和Key，并完成合成连接核验；无需重新粘贴。新机器或轮换时，将地址写入私有`.env`，Key保存到`SLEEPSCAPE_LLM_KEY_FILE`指定的普通文件（目录700、文件600，不允许符号链接）。不要把Key写入环境模板、终端参数或TOML。非敏感模型配置只维护`configs/models.toml`；安装包内的默认配置在构建时由该文件生成，无需维护第二份。 当前该文件显式配置response_mode="json_object"，同模型与私有URL/Key不变；schema_profile="aliyun-compatible-1"保留供可配置的json_schema模式使用。协议仅由显式配置选择，运行时不自动切换。JSON对象模式只保证JSON语法，system仍动态提供完整规范Schema，正文仅按本地回答 Schema 校验，发布时另核对来源和资格；不得删除规范约束。省略response_mode时默认json_schema，部署须包含当前TOML。实际生效与真实结果见核验报告。
 
 ```sh
 uv run --locked sleepscape model-status
@@ -313,13 +313,9 @@ status/plan-only只读，不建目录、不备份、不清理、不联网、不�
 
 磁盘水位正常/预警/限制/临界及故障行为见[维护方案](plans/maintenance.md#容量规则与写入保护)。预检不能排除并发耗尽或配额变化；设备收到503及Retry-After时不删未确认队列。P6不会清理业务事实、手工WAL或自动VACUUM。
 
-首次安装或更新维护服务时，在Linux服务器的`/opt/sleepscape`执行；已有配置不得因重复安装而重置：
+单独更新维护单元时，在服务器 `/opt/sleepscape` 执行[安装维护单元](#安装维护单元)，随后启用定时器并检查下次触发时间。
 
 ```sh
-sudo install -m 644 deploy/maintenance.service /etc/systemd/system/maintenance.service
-sudo install -m 644 deploy/maintenance.timer /etc/systemd/system/maintenance.timer
-sudo systemd-analyze verify /etc/systemd/system/maintenance.service /etc/systemd/system/maintenance.timer
-sudo systemctl daemon-reload
 sudo systemctl enable --now maintenance.timer
 sudo systemctl list-timers maintenance.timer garmin-sync.timer
 ```
@@ -432,14 +428,25 @@ sudo -u caddy env SLEEPSCAPE_PUBLIC_IP="$SLEEPSCAPE_PUBLIC_IP" /usr/local/bin/ca
 
 Let's Encrypt公网IP证书约160小时有效，由Caddy持续检查并提前自动续期；续期后在内存中替换证书，**无需外部续期cron或手工重载钩子**。`systemctl reload caddy-sleepscape`用于配置更新和重载路径核验，不等于已经经历自然到期续签。首次签发、后续证书序列号/有效期变化和新连接加载各自记录，不能以一次reload冒充自然续期证据。公网TCP80/443及服务器至ACME的出站HTTPS须持续可用，系统时间须正确；不靠自签、`curl -k`或关闭固件证书校验绕过错误。官方依据见[Let’s Encrypt的IP与短期证书说明](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability)及[Caddy自动HTTPS](https://caddyserver.com/docs/automatic-https)。
 
-**安装服务并验收。** 从`/opt/sleepscape`安装当前唯一Web、每日采集和维护单元；不另建第二套采集cron：
+### 安装维护单元
+
+在服务器 `/opt/sleepscape` 执行，保留现有维护配置。
+
+```sh
+sudo install -m 644 deploy/maintenance.service /etc/systemd/system/maintenance.service
+sudo install -m 644 deploy/maintenance.timer /etc/systemd/system/maintenance.timer
+sudo systemd-analyze verify /etc/systemd/system/maintenance.service /etc/systemd/system/maintenance.timer
+sudo systemctl daemon-reload
+```
+
+### 安装 Web 与采集服务
+
+完整部署先执行上方维护单元安装步骤，再安装 Web 与每日采集单元。
 
 ```sh
 sudo install -m 644 deploy/sleepscape.service /etc/systemd/system/sleepscape.service
 sudo install -m 644 deploy/garmin-sync.service /etc/systemd/system/garmin-sync.service
 sudo install -m 644 deploy/garmin-sync.timer /etc/systemd/system/garmin-sync.timer
-sudo install -m 644 deploy/maintenance.service /etc/systemd/system/maintenance.service
-sudo install -m 644 deploy/maintenance.timer /etc/systemd/system/maintenance.timer
 sudo systemd-analyze verify /etc/systemd/system/sleepscape.service /etc/systemd/system/garmin-sync.service /etc/systemd/system/garmin-sync.timer /etc/systemd/system/maintenance.service /etc/systemd/system/maintenance.timer /etc/systemd/system/caddy-sleepscape.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now sleepscape.service caddy-sleepscape.service
@@ -475,13 +482,13 @@ Web单worker、512MiB上限，采集/维护各768MiB、Caddy512MiB均是保护�
 
 ## 本机模型格式批测
 
-批测使用`tests/model_batch_cases.py`生成可复现的合成证据，固定seed并通过生产完整性/输入检查；`tests/model_batch_runner.py`复用生产`_request`、model_output Schema与完整业务校验。system、固定生成指令、模型参数及Schema保持一致，每例只替换证据JSON。无资格的数据应在输入层拒绝，不混入模型通过率分母。
+批测使用`tests/model_batch_cases.py`生成可复现的合成证据，固定seed并通过生产完整性/输入检查；`tests/model_batch_runner.py`复用生产`_request`、model_output Schema 与报告组装。system、固定生成指令、模型参数及Schema保持一致，每例只替换证据JSON。无资格的数据应在输入层拒绝，不混入模型通过率分母。
 
 普通`make check`会跳过`tests/test_live_model_batch.py`的50项真实调用。只有明确取得本次调用额度后，由任务级启动器将`BatchEvaluator`注入pytest配置的`_sleepscape_live_batch`才执行；评估器本身不读取Key、不联网、不调整生产预算。当前测试入口固定50例，不新增生产CLI绕过入口。
 
 授权启动器先核对本机/线上公开参数、Prompt及Schema，并在受控进程用一次性摘要核对URL和Key是否一致，只保存一致性结论。所有调用仍通过`model_runtime`先预留再执行，授权额度仅限本次任务；生产默认上限不变。每例最多一次调用、失败不补调、不在中途修改Prompt；已预留但中断的案例也算消耗，恢复时不能重复调用。429继续尊重冷却。再次开展付费批测需新的明确授权。
 
-本轮输入、授权与逐条安全结果保存于忽略目录`data/reports/model-batch/`，汇总入口为`data/reports/model-batch/summary.json`。结果分别记录JSON解析、模型Schema、完整业务校验；只有完整通过才代表这次返回满足项目发布规则。Schema失败不能冒充已执行后续业务检查。usage只汇总可获得的值，未知失败消耗未计入，不等于总费用。批测不写睡眠数据库，也不发布合成报告；不保存原始失败响应或正文。
+本轮输入、授权与逐条安全结果保存于忽略目录`data/reports/model-batch/`，汇总入口为`data/reports/model-batch/summary.json`。结果分别记录JSON解析、模型Schema、报告组装结果。Schema 失败的回答不能发布。usage只汇总可获得的值，未知失败消耗未计入，不等于总费用。批测不写睡眠数据库，也不发布合成报告；不保存原始失败响应或正文。
 
 ## 回归、构建与清理
 

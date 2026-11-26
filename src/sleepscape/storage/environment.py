@@ -14,6 +14,7 @@ from sleepscape.domain.environment import (
     content_hash,
     validate_light_profile,
 )
+from sleepscape.storage.repository import Repository, secure_database_files
 from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 ENVIRONMENT_TABLES = (
@@ -109,17 +110,8 @@ def _connect(data_dir: Path, *, writable: bool = False) -> sqlite3.Connection:
     return connection
 
 
-def _secure(data_dir: Path) -> None:
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        path = Path(data_dir) / ("sleepscape.sqlite3" + suffix)
-        if path.exists():
-            path.chmod(0o600)
-
-
 def initialize(data_dir: Path) -> None:
     """Called only by explicit registration, never by startup, GET, or unauthenticated POST."""
-    from sleepscape.storage.repository import Repository
-
     data_dir = Path(data_dir)
     if data_dir.is_symlink():
         raise EnvironmentError("environment_directory_symlink_not_allowed")
@@ -153,7 +145,7 @@ def initialize(data_dir: Path) -> None:
         except Exception:
             connection.rollback()
             raise
-    _secure(data_dir)
+    secure_database_files(data_dir)
 
 
 def register(
@@ -175,7 +167,7 @@ def register(
             "INSERT INTO environment_profiles VALUES (?, ?, ?, ?, ?)",
             (device_id, profile_id, canonical_json(payload), content_hash(payload), now),
         )
-    _secure(data_dir)
+    secure_database_files(data_dir)
 
 
 def add_profile(
@@ -199,7 +191,7 @@ def add_profile(
             "INSERT INTO environment_profiles VALUES (?, ?, ?, ?, ?)",
             (device_id, profile_id, canonical_json(payload), content_hash(payload), _now()),
         )
-    _secure(data_dir)
+    secure_database_files(data_dir)
 
 
 def local_registration_required(
@@ -261,7 +253,7 @@ def register_local(
                 "INSERT INTO environment_profiles VALUES (?, ?, ?, ?, ?)",
                 (device_id, profile_id, canonical_json(payload), content_hash(payload), _now()),
             )
-    _secure(data_dir)
+    secure_database_files(data_dir)
 
 
 def revoke(data_dir: Path, device_id: str) -> None:
@@ -272,7 +264,7 @@ def revoke(data_dir: Path, device_id: str) -> None:
         )
         if result.rowcount != 1:
             raise EnvironmentError("device_not_registered", 404)
-    _secure(data_dir)
+    secure_database_files(data_dir)
 
 
 def authenticate(data_dir: Path, token: str) -> str | None:
@@ -448,7 +440,7 @@ def ingest(data_dir: Path, device_id: str, batch: EnvironmentBatch) -> dict:
             if is_disk_full(exc):
                 raise EnvironmentError("storage_capacity_critical", 503) from None
             raise
-    _secure(data_dir)
+    secure_database_files(data_dir)
     return ack
 
 
@@ -475,4 +467,4 @@ def rotate_token(data_dir: Path, device_id: str, token: str) -> None:
         )
         if result.rowcount != 1:
             raise EnvironmentError("device_not_registered", 404)
-    _secure(data_dir)
+    secure_database_files(data_dir)

@@ -45,18 +45,10 @@ def prepared(configured, monkeypatch):
 
 
 def good_reply(_model, request):
-    evidence = validate_evidence(json.loads(request.messages[1].content))
-    result = {
-        "summary": {"text": "这段时间手表记录的典型睡眠时长很短。", "evidence_ids": ["A1"]},
-        "observations": [
-            {"text": "这晚的记录可以回看。", "evidence_ids": [evidence["examples"][0]]}
-        ],
-        "hypotheses": [],
-        "actions": [],
-    }
-    return ModelResult(
-        json.dumps(result, ensure_ascii=False), "qwen3.8-max", "stop", {"total_tokens": 1}
-    )
+    from test_sleep_analysis_service import response_for
+
+    validate_evidence(json.loads(request.messages[1].content), for_generation=True)
+    return response_for(request)
 
 
 @pytest.mark.parametrize("length", [3, 4, 7])
@@ -107,14 +99,17 @@ def test_actual_window_all_nights_checked_and_one_physical_call(prepared, length
         "visible_n": length,
         "eligible_n": length,
     }
-    assert evidence["quality"]["feeling_counts"]["unfilled"] == length - 1
+    assert sum(n["morning_feeling"] is None for n in evidence["nights"]) == length - 1
     assert len(evidence["nights"]) == length
     assert weekly_review.run_review(settings, cutoff, now=now)["model_calls"] == 0
     view = weekly_review.review_view(settings, cutoff, now=now)
     assert view["source_changed"] is False
     assert view["report"]["evidence"] == evidence
     assert "source_hash" not in json.dumps(view)
+    later = now + timedelta(days=40)
+    assert weekly_review.review_view(settings, cutoff, now=later)["source_changed"] is False
     morning_feeling.save(settings.data_dir, DAY, Feeling.GOOD)
+    assert weekly_review.review_view(settings, cutoff, now=later)["source_changed"] is True
     assert weekly_review.review_view(settings, cutoff, now=now)["source_changed"] is True
     assert weekly_review.run_review(settings, cutoff, now=now)["model_calls"] == 0
     settings.dashboard_start_date = DAY + timedelta(days=1)
@@ -136,25 +131,6 @@ def test_reply_rejected_or_source_changed_does_not_publish_or_retry(prepared):
     assert weekly_review.run_review(settings, DAY, now=NOW)["model_calls"] == 0
 
 
-def test_new_review_summary_focus_preserves_historical_read(prepared):
-    from sleepscape.resources.weekly_review import parse_output, request_for, validate_output
-
-    settings, _ = prepared
-    complete(prepared)
-    with DashboardReader(settings.data_dir) as reader:
-        evidence, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
-    reply = json.loads(good_reply(None, request_for(evidence)).text)
-    temperature = next(row for row in evidence["aggregates"] if row["metric"] == "temperature_c")
-    for summary in (
-        {"text": "本周采样完整度较高，可进行睡眠分析。", "evidence_ids": evidence["examples"]},
-        {"text": "这段时间睡得很安稳。", "evidence_ids": [temperature["id"]]},
-    ):
-        reply["summary"] = summary
-        validate_output(reply, evidence)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            parse_output(json.dumps(reply), evidence)
-
-
 def test_strict_output_rejects_fabricated_references_then_retries_until_shared_cap(prepared):
     settings, _ = prepared
     complete(prepared)
@@ -172,13 +148,13 @@ def test_strict_output_rejects_fabricated_references_then_retries_until_shared_c
     result = weekly_review.run_review(
         settings, DAY, now=NOW, caller=invalid, sleeper=lambda _: None
     )
-    assert result["state"] == "failed" and result["error_code"] == "output_business_mismatch"
+    assert result["state"] == "failed" and result["error_code"] == "output_schema_mismatch"
     assert result["model_calls"] == 2
     assert weekly_review.review_view(settings, DAY, now=NOW)["report"] is None
     assert weekly_review.run_review(settings, DAY, now=NOW)["model_calls"] == 0
     attempts = model_runtime.read_state(settings.data_dir)["attempts"]
     assert len(attempts) == model_runtime.DAILY_LIMIT
-    assert [row["code"] for row in attempts[-2:]] == ["output_business_mismatch"] * 2
+    assert [row["code"] for row in attempts[-2:]] == ["output_schema_mismatch"] * 2
 
 
 def test_migrates_a_legacy_failure_and_retries_with_correction(prepared):
@@ -205,8 +181,7 @@ def test_migrates_a_legacy_failure_and_retries_with_correction(prepared):
     failures = []
 
     def caller(model, request):
-        assert "上次输出未通过校验" in request.messages[0].content
-        assert "actions 有依据时保留一条" in request.messages[0].content
+        assert "JSON Schema" in request.messages[-1].content
         if not failures:
             failures.append(True)
             raise ModelError("output_schema_max_items")
@@ -268,7 +243,7 @@ def test_review_backup_restore_and_readonly_route(prepared, tmp_path):
         assert unauth.get("/sleep", auth=auth).status_code == 200
         response = unauth.get(endpoint)
         assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-        assert response.json()["report"]["content"]["summary"]["evidence_ids"] == ["A1"]
+        assert response.json()["report"]["content"]["summary"]["text"].startswith("这晚")
         assert unauth.get("/api/v1/sleep-reviews/2025-12-31").status_code == 404
     assert before == (db.read_bytes(), model_runtime.read_state(settings.data_dir))
     backup = create_backup(settings)
@@ -353,29 +328,18 @@ def test_empty_and_disabled_and_shared_daily_limit(prepared):
 
 
 def test_larger_valid_input_and_openai_transport(prepared):
-    from sleepscape.domain.weekly_review import build_evidence
     from sleepscape.resources.weekly_review import request_for
 
-    settings, _ = prepared
+    settings, batch = prepared
     complete(prepared)
+    days = [DAY + timedelta(days=i) for i in range(7)]
+    for day in days[1:]:
+        add_night(settings, batch, day)
     with DashboardReader(settings.data_dir) as reader:
-        payload, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
-    row = payload["nights"][0]
-    rows = [
-        {
-            **row,
-            "id": f"N{i + 1}",
-            "night_date": str(DAY + timedelta(days=i)),
-            "environment_group": f"G{i + 1}",
-            "feeling": ("good", "poor")[i % 2],
-        }
-        for i in range(7)
-    ]
-    evidence = build_evidence(rows, "available")
-    assert len(evidence["aggregates"]) == 34
-    assert all(item["environment_group"] is None for item in evidence["comparisons"])
-    assert len(evidence["comparisons"]) == 6
-    assert "environment_groups_differ" in evidence["quality"]["limits"]
+        evidence, _, _ = weekly_review._snapshot(settings, reader, days, NOW + timedelta(days=6))
+    assert list(n["night_date"] for n in evidence["nights"]) == list(map(str, days))
+    assert evidence["target_date"] == str(days[-1])
+    assert set(evidence) == {"target_date", "window", "nights"}
     request = request_for(evidence)
     assert len(request.messages[1].content.encode()) <= 24 * 1024
     assert sum(len(message.content.encode()) for message in request.messages) <= MAX_MESSAGE_BYTES
@@ -426,18 +390,13 @@ def test_daily_publishes_both_report_types_on_the_same_ledger(prepared, monkeypa
         evidence = json.loads(request.messages[1].content)
         assert "filled_at" not in request.messages[1].content
         response = good_caller(model, request)
-        if feeling is None:
-            assert "morning_feeling" not in evidence
-            return response
-        assert evidence["morning_feeling"] == {"id": "F000", "value": "good"}
-        report = json.loads(response.text)
-        assert "F000" in report["summary"]["evidence_ids"]
-        return ModelResult(json.dumps(report), response.model, "stop", response.usage)
+        assert evidence["nights"][0]["morning_feeling"] == feeling
+        return response
 
     def review_caller(model, request):
         prompts.append("review")
         evidence = json.loads(request.messages[1].content)
-        assert evidence["nights"][0]["feeling"] == feeling
+        assert evidence["nights"][0]["morning_feeling"] == feeling
         assert "filled_at" not in request.messages[1].content
         return good_reply(model, request)
 
@@ -456,327 +415,5 @@ def test_daily_publishes_both_report_types_on_the_same_ledger(prepared, monkeypa
         settings, DAY, readiness=readiness.evaluate_night(settings, DAY, now=NOW)
     )["report"]
     assert ("morning_feeling" in nightly["evidence"]) == (feeling is not None)
-    assert ("F000" in nightly["content"]["summary"]["evidence_ids"]) == (feeling is not None)
+    assert (nightly["content"]["feeling"] is not None) == (feeling is not None)
     assert weekly_review.review_view(settings, DAY, now=NOW)["report"] is not None
-
-
-def test_with_gaps_and_low_light_flags_are_preserved():
-    from zoneinfo import ZoneInfo
-
-    from test_analysis_readiness import DAY, NOW, evaluate, light_bus_gap, sample
-
-    from sleepscape.domain.weekly_review import nightly_evidence
-
-    night, environment = sample(minutes=3)
-    light = light_bus_gap(environment, 0, 1)
-    light.update(min=3, mean=3, max=3)
-    sound = environment["records"][0]["metrics"]["sound_relative"]
-    sound.update(
-        state="partial",
-        valid_count=59,
-        valid_1s_count=59,
-        valid_duration_ms=59000,
-        valid_samples=944000,
-        quality=["partial_window", "audio_gap"],
-    )
-    result = evaluate(night, environment)
-    assert result["core_ready"] and result["quality_state"] == "with_gaps"
-    evidence, _ = nightly_evidence(
-        DAY, night, environment, result, now=NOW, zone=ZoneInfo("Asia/Shanghai")
-    )
-    assert "low_light_limit" in evidence["limits"]
-    assert "light_bus_sampling_gap" in evidence["limits"]
-    assert evidence["metrics"]["illuminance_lux"] == pytest.approx(3 * 59 / 179)
-    assert evidence["metrics"]["sound_relative"] == pytest.approx(-45)
-
-
-def test_cross_configuration_comparison_in_free_text_is_rejected():
-    from sleepscape.domain.weekly_review import build_evidence
-    from sleepscape.models.base import ModelError
-    from sleepscape.resources.weekly_review import validate_output
-
-    nights = [
-        {
-            "id": identifier,
-            "night_date": str(DAY + timedelta(days=offset)),
-            "metrics": {"sleep_seconds": 120, "temperature_c": 20 + offset},
-            "environment_group": group,
-            "feeling": None,
-            "limits": [],
-        }
-        for offset, (identifier, group) in enumerate((("N1", "G1"), ("N2", "G2")))
-    ]
-    evidence = build_evidence(nights, "available")
-    payload = {
-        "summary": {
-            "text": "后一个夜晚的温度更高。",
-            "evidence_ids": ["N1", "N2"],
-        },
-        "observations": [{"text": "可回看这晚。", "evidence_ids": ["N1"]}],
-        "hypotheses": [],
-        "actions": [],
-    }
-    with pytest.raises(ModelError, match="output_business_mismatch"):
-        validate_output(payload, evidence)
-
-
-def test_duration_matched_reversal_is_replayed_and_required_in_new_prose(prepared):
-    from sleepscape.domain.weekly_review import build_evidence, pair_checks
-    from sleepscape.resources.weekly_review import parse_output, request_for, validate_output
-
-    settings, _ = prepared
-    complete(prepared)
-    with DashboardReader(settings.data_dir) as reader:
-        snapshot, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
-    seed = snapshot["nights"][0]
-    nights = [
-        {
-            **seed,
-            "id": f"N{index}",
-            "night_date": str(DAY + timedelta(days=index - 1)),
-            "feeling": feeling,
-            "environment_group": group,
-            "metrics": {
-                **seed["metrics"],
-                "sleep_seconds": length,
-                "sleep_end_offset_seconds": wake,
-            },
-        }
-        for index, (length, wake, feeling, group) in enumerate(
-            (
-                (8100, 100, "poor", "G1"),
-                (8100, 200, "fair", "G2"),
-                (8000, 300, "poor", "G1"),
-                (8200, 200, "fair", "G1"),
-            ),
-            1,
-        )
-    ]
-    source = build_evidence(nights, "available")
-    validate_evidence(source)
-    by_metric = {r["metric"]: r for r in source["pair_checks"]}
-    wake = by_metric["sleep_end_offset_seconds"]
-    assert wake["counterexample"]
-    assert wake["pair_n"] == 3 and wake["night_n"] == 4
-    assert by_metric["temperature_c"]["night_n"] == 2
-    reply = json.loads(good_reply(None, request_for(source)).text)
-    reply["summary"] = {"text": wake["text"], "evidence_ids": [wake["id"]]}
-    assert parse_output(json.dumps(reply), source) == reply
-    # Original evidence may lack the derived cards and its old prose remains readable.
-    legacy = {k: v for k, v in source.items() if k != "pair_checks"}
-    reply["summary"] = {"text": "醒得较早的夜晚晨起睡感更好。", "evidence_ids": source["examples"]}
-    validate_output(reply, legacy)
-    for refs in ([wake["id"]], source["examples"]):
-        reply["summary"]["evidence_ids"] = refs
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            parse_output(json.dumps(reply), source)
-    reply["summary"] = {"text": wake["text"], "evidence_ids": [wake["id"]]}
-    reply["actions"] = [
-        {
-            "text": "下周尝试提前起床。",
-            "observe": "留意后续几晚。",
-            "evidence_ids": source["examples"],
-        }
-    ]
-    with pytest.raises(ModelError, match="output_business_mismatch"):
-        parse_output(json.dumps(reply), source)
-    reply["actions"][0].update(text="记录醒来时间和晨起睡感。", observe="留意次日的感受。")
-    parse_output(json.dumps(reply), source)
-    reply["actions"][0]["observe"] += "醒得早的夜晚睡感也好。"
-    with pytest.raises(ModelError, match="output_business_mismatch"):
-        parse_output(json.dumps(reply), source)
-    wake["night_n"] = 2
-    with pytest.raises(ModelError):
-        validate_evidence(source)
-    single = pair_checks(nights[:2], ["N2", "N1"])
-    single_wake = next(r for r in single if r["metric"] == "sleep_end_offset_seconds")
-    assert single_wake["pair_n"] == 1 and "仅有这对" in single_wake["text"]
-    assert single_wake["counterexample"] == [] and single_wake["max_duration_gap_seconds"] == 0
-    assert not any(r["metric"] == "temperature_c" for r in single)
-    assert not pair_checks([{**n, "feeling": None} for n in nights], [])
-
-
-def test_pair_card_survives_publication_read_and_repeat(prepared):
-    settings, batch = prepared
-    end = DAY + timedelta(days=1)
-    clock = NOW + timedelta(days=1)
-    add_night(settings, batch, end)
-    complete(prepared)
-    morning_feeling.migrate(settings.data_dir)
-    morning_feeling.save(settings.data_dir, DAY, Feeling.FAIR)
-    morning_feeling.save(settings.data_dir, end, Feeling.POOR)
-
-    def caller(model, request):
-        source = json.loads(request.messages[1].content)
-        proof = next(r for r in source["pair_checks"] if r["metric"] == "sleep_end_offset_seconds")
-        reply = good_reply(model, request)
-        output = json.loads(reply.text)
-        output["summary"] = {"text": proof["text"], "evidence_ids": [proof["id"]]}
-        return ModelResult(json.dumps(output), reply.model, "stop", reply.usage)
-
-    result = weekly_review.run_review(settings, end, now=clock, caller=caller)
-    assert result["state"] == "complete" and result["model_calls"] == 1
-    view = weekly_review.review_view(settings, end, now=clock)
-    assert view["source_changed"] is False
-    stored = view["report"]
-    proof = next(
-        r
-        for r in stored["evidence"]["pair_checks"]
-        if r["id"] == stored["content"]["summary"]["evidence_ids"][0]
-    )
-    assert (proof["pair_n"], proof["night_n"], proof["counterexample"]) == (1, 2, [])
-    assert stored["content"]["summary"]["text"] == proof["text"]
-    assert weekly_review.run_review(settings, end, now=clock)["model_calls"] == 0
-    backup = create_backup(settings)
-    check_restore(settings, Path(backup["backup_path"]))
-
-
-def test_weekly_observations_match_the_cited_night_and_median_limitations(prepared):
-    from sleepscape.domain.weekly_review import build_evidence
-    from sleepscape.resources.weekly_review import parse_output, request_for
-
-    settings, _ = prepared
-    complete(prepared)
-    with DashboardReader(settings.data_dir) as reader:
-        base, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
-    for feeling in ("poor", None):
-        source = build_evidence([{**base["nights"][0], "feeling": feeling}], "available")
-        candidate = json.loads(good_reply(None, request_for(source)).text)
-        for claim in ("这晚睡眠时长有记录，晨起睡感较好。", "这晚晨起睡感较好。"):
-            candidate["observations"][0] = {"text": claim, "evidence_ids": ["N1"]}
-            with pytest.raises(ModelError, match="output_business_mismatch"):
-                parse_output(json.dumps(candidate), source)
-        if feeling == "poor":
-            candidate["observations"][0] = {"text": "晨起睡感较差。", "evidence_ids": ["A1"]}
-            with pytest.raises(ModelError, match="output_business_mismatch"):
-                parse_output(json.dumps(candidate), source)
-            candidate["observations"][0]["evidence_ids"] = ["N1"]
-            parse_output(json.dumps(candidate), source)
-        candidate["actions"] = [
-            {
-                "text": "下次可以记录晨起睡感是否较好。",
-                "observe": "留意自己醒来的感受。",
-                "evidence_ids": ["N1"],
-            }
-        ]
-        candidate["observations"][0] = {
-            "text": "仅凭中位数无法判断整段是否稳定。",
-            "evidence_ids": ["A1"],
-        }
-        parse_output(json.dumps(candidate), source)
-        candidate["observations"][0]["text"] += "整段都很稳定。"
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            parse_output(json.dumps(candidate), source)
-
-
-def test_generation_replays_aggregates_groups_and_examples_before_using_directions(prepared):
-    from copy import deepcopy
-
-    from sleepscape.domain.weekly_review import build_evidence
-    from sleepscape.resources.weekly_review import request_for
-
-    settings, _ = prepared
-    complete(prepared)
-    with DashboardReader(settings.data_dir) as reader:
-        snapshot, _, _ = weekly_review._snapshot(settings, reader, [DAY], NOW)
-    seed = snapshot["nights"][0]
-    nights = [
-        {
-            **seed,
-            "id": f"N{i + 1}",
-            "night_date": str(DAY + timedelta(days=i)),
-            "feeling": rating,
-            "metrics": {**seed["metrics"], "sleep_seconds": 100 + i},
-        }
-        for i, rating in enumerate(("poor", "good", "poor", "good"))
-    ]
-    source = build_evidence(nights, "available")
-    request_for(source, correction=True)
-    forged = deepcopy(source)
-    forged["examples"] = [n["id"] for n in nights if n["id"] not in source["examples"]][:2]
-    with pytest.raises(ModelError, match="model_operation_failed"):
-        request_for(forged)
-    for group, field in (
-        ("aggregates", "median"),
-        ("comparisons", "difference"),
-        ("comparisons", "poor_median"),
-    ):
-        forged = deepcopy(source)
-        forged[group][0][field] += 1
-        with pytest.raises(ModelError, match="model_operation_failed"):
-            request_for(forged)
-    historical = {k: v for k, v in source.items() if k != "pair_checks"}
-    validate_evidence(historical)
-    with pytest.raises(ModelError):
-        request_for(historical)
-
-
-@pytest.mark.parametrize("same_group", [True, False])
-def test_review_claims_require_the_named_metric_and_comparable_nights(prepared, same_group):
-    from sleepscape.domain.weekly_review import build_evidence
-    from sleepscape.resources.weekly_review import parse_output, request_for
-
-    settings, _ = prepared
-    complete(prepared)
-    with DashboardReader(settings.data_dir) as reader:
-        first = weekly_review._snapshot(settings, reader, [DAY], NOW)[0]["nights"][0]
-    second = {**first, "id": "N2", "night_date": str(DAY + timedelta(days=1))}
-    nights = [
-        first,
-        {**second, "environment_group": first["environment_group"] if same_group else "G2"},
-    ]
-    source = build_evidence(nights, "available")
-    candidate = json.loads(good_reply(None, request_for(source)).text)
-    aggregate = {row["metric"]: row["id"] for row in source["aggregates"]}
-
-    def check(text, ids):
-        candidate["observations"][0] = {"text": text, "evidence_ids": ids}
-        parse_output(json.dumps(candidate), source)
-
-    for text, ids in (
-        ("这晚的卧室温度与其他夜晚不同。", ["N1"]),
-        ("这几晚的卧室温度一直很稳定。", ["N1"]),
-        ("卧室温度有记录。和其他夜晚不一样。", ["N1"]),
-        ("各晚的心率和睡眠时长都可回看。", [aggregate["sleep_seconds"]]),
-        ("这几晚的卧室温度一直很稳定。", ["N1", aggregate["sleep_seconds"]]),
-    ):
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check(text, ids)
-    with pytest.raises(ModelError, match="output_business_mismatch"):
-        check("这两晚的温度不同。", ["N1", "N2"])
-    check("这晚的卧室温度有记录。", ["N1"])
-    check(
-        "可回看夜间心率与睡眠时长的中位数。",
-        [aggregate["average_heart_rate"], aggregate["sleep_seconds"]],
-    )
-    check("只凭该晚的温度无法判断其他夜晚是否稳定。", ["N1"])
-    check("仅凭这晚的卧室温度无法判断是否与其他夜晚不同。", ["N1"])
-    text = "这两晚的卧室温度记录可以互相对照。"
-    if same_group:
-        check(text, ["N1", "N2"])
-        direct = ["N1", aggregate["temperature_c"]]
-        check("这晚的卧室温度与整段中位数相同。", direct)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("这晚的卧室温度高于整段中位数。", direct)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("两晚的卧室温度不相同。", ["N1", "N2"])
-        nights[1]["metrics"] = {
-            **first["metrics"],
-            "temperature_c": first["metrics"]["temperature_c"] + 1,
-        }
-        source = build_evidence(nights, "available")
-        check("两晚的卧室温度不相同。", ["N1", "N2"])
-        check("这晚的卧室温度低于整段中位数。", direct)
-        check("这晚的卧室温度不等于整段中位数。", direct)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("这晚的卧室温度不低于整段中位数。", direct)
-        check("整段卧室温度中位数高于这晚的温度。", direct)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("这晚的卧室温度高于整段中位数。", direct)
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("两晚的卧室温度相同。", ["N1", "N2"])
-    else:
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check("这晚的卧室温度与整段中位数相同。", ["N1", aggregate["temperature_c"]])
-        with pytest.raises(ModelError, match="output_business_mismatch"):
-            check(text, ["N1", "N2"])

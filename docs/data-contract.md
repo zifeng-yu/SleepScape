@@ -119,24 +119,9 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 
 ### 输入与输出
 
-实际范围整体通过后，程序逐日构造有界证据，再填入请求。发送实际起止、可见/合格夜数、质量限制、程序计算的聚合和比较，以及实际范围内全部合格夜的白名单日期事实，最多七晚。
+逐夜和七日请求使用同一逐晚观测格式。七日请求的 `target_date` 是 `window.end_date`，`nights` 按实际日期连续排列，最后一项就是待解读的目标夜。短窗口只提供已有日期。每晚携带睡眠起止 UTC、佳明与环境指标及单位、相对声音事件摘要和检测状态、质量及限制、可选晨起睡感。复盘额外携带匿名环境测量组，供模型辨别哪些夜晚的环境可以比较。个人身份、位置、音频、活动标题、凭据和自由文本均排除。输入上限 24 KiB，消息总量上限 32 KiB。
 
-- `window` 包含 `start_date/end_date/visible_n/eligible_n`。 `quality` 包含允许缺采、不可用状态、睡感可用性与填写分布，限制采用固定码。
-- `aggregates` 给指标、单位、中位数及 `valid_n`。 `comparisons` 给指标、可比组、双方分母和程序计算的方向/差值。
-- `nights` 给合格醒来日、质量、同一夜的有限指标、允许的睡感及匿名测量组。 `examples` 只引用其中最多两晚的证据 ID。聚合、比较和夜晚各有可引用 ID。
-- 新生成请求和候选发布均要求 `pair_checks`，没有可比对时为空数组。按各晚原始证据重算核对汇总、分组、例证和配对。单晚晨起评级的陈述须直接引用已填该评级的夜晚。新候选正文中的指标须由本条引用覆盖。比较例证夜晚的同异须引用有该指标的可比夜晚，环境对照须同测量组。例证夜可与同指标的窗口中位数直接比较，须同时引用单晚和汇总卡，汇总至少含两个有效夜，环境须同测量组，方向按两者实值校验。单晚读数或窗口中位数不足以判断跨夜波动，夜均值不足以判断整夜持续稳定。
-- `pair_checks` 只由已授权的 `nights` 和 `examples` 派生。每项 P 卡保存指标、例证对、反例对、时长差上限、可比配对数、去重夜晚数和程序短句。两晚均须有该指标和不同的已填睡感。先尝试原例证对，否则按最近醒来日、再按次近醒来日选可比对，不按结果方向选例。每对按睡感从好到差排列，评级间距不作数值解释。
-- 对照同一指标时检索窗口内全部合格组合，时长差不得超过例证对；时长自身的对照不按时长差筛选。环境对照还须和例证同测量组。反例优先取相反方向，其次取与例证不同的持平或非持平方向。仅一对时只说明这一对。P 卡保留原夜晚入口，可展开核对同一晚在多个配对中的复用。新候选解释配对时原样引用 P 卡短句，分组中位数沿用 C 卡，两个同睡感例证可有限说明时长有别。历史载荷无 P 卡时按原合同读取，派生字段不参与来源变化判定。
-- 新复盘摘要可引用与睡感直接相关的 P 卡，或至少引用一项睡眠时长或作息聚合、睡感分组比较或可引用的例证夜晚。生成校验拒绝常见的采集状态开场，已存报告按原合同读取。
-
-| 证据 | 口径 |
-| --- | --- |
-| Garmin | 主睡眠时长、入睡/醒来、夜间平均心率、昨夜 HRV、前日完整活动负荷。各项中位数按本段有效夜计算，作息沿用[历史复盘](#历史复盘)的跨午夜偏移。 |
-| 环境 | 睡眠窗口内有效温度、湿度、照度和相对声音的夜均值及质量，沿用[逐夜分析合同](#睡眠分析合同)加权口径。声音先在每晚能量域求均值，再比较可比夜的夜均值。配置仅作匿名分组，同设备、同测量配置和摆位内比较。 |
-| 晨起睡感 | 授权范围内仅附合格夜的较差/一般/较好/空枚举及各组计数。睡感不可读时提供限制并省略睡感比较。填写时间和不合格夜的睡感留在本地。 |
-| 比较和回看 | 较好与较差若各有至少两晚使用同一有效指标，程序才给该指标分组中位数和差值。回看实例至多两晚，优先选最近的「较差且时长不低于本段中位数」及「较好且短于中位数」的有效夜，剩余名额用最近合格夜填充。每项聚合、比较、回看实例有固定证据 ID。 |
-
-白名单排除原始响应、来源和设备身份、实际摆位细节、定位、活动标题、自由文本、日志、凭据和逐分钟读数。证据输入最多 24 KiB，完整消息最多 32 KiB。返回概况一段、观察一至三条、待验证线索和后续行动各至多一条。各条引用当前证据，线索附明确替代解释。日期、数字、分母、质量等由程序从生成时证据展示。机器结构见[包内 Schema](../src/sleepscape/resources/sleep-review.schema.json)。
+两类报告共用[模型回答 Schema](../src/sleepscape/resources/sleep-analysis.schema.json) 的 `model_output`。模型写整体判断 `summary.text`、佳明解读 `garmin`、环境解读 `environment`、可空的睡感解读 `feeling`、可能原因列表 `possible_reasons`、可空的跨夜比较 `comparison`。每日提示要求比较填空，七日提示要求用前几晚解释目标夜。所有正文均由模型给出，只以 JSON Schema 验收。历史报告保留发布时的正文和证据。
 
 ### 请求、状态及持久化
 
@@ -149,6 +134,12 @@ SpO2的 `native` 与 `hourly_average` 使用不同序列类型和记录键，不
 | 存储与恢复 | 可选 `sleep_review_schema`、`sleep_review_inputs`、`sleep_review_runs`、`sleep_review_reports` 及升级添加的 `sleep_review_failed_attempts`。重试前，在同一 SQLite 事务归档失败的请求 ID、截止日期、输入 ID、尝试时间和安全错误码，再更新当前状态。报告每截止日期唯一，保存实际起点及生成证据。显式迁移及备份核验新旧布局、摘要和引用；旧备份仍可恢复。 |
 
 发布时使用同一 SQLite 连接上的 PRAGMA data_version。读前、结束只读快照后，以及取得短 BEGIN IMMEDIATE 后对照提交版本。发现变化时结束写事务，有限次本地重查。仍冲突则废弃候选，持久新鲜度继续用语义摘要。外呼阶段不持任何 SQLite 写事务。
+
+### 私有模型请求与响应日志
+
+逐夜与滚动复盘的每次生产模型调用使用预算账本的请求 ID。在 `data/llm-exchanges/` 中，以「调用的上海日期.类型.报告归属日.请求ID」关联三类 JSON。发送前记录实际请求体，包括模型、完整提示、证据和生成参数。收到可解析的响应对象时先摘录最终回答的原文或拒答、结束原因和可用量，再执行 JSON Schema 校验。HTTP 错误记录状态及安全码。验证文件记录回答是否通过，以及可用的业务校验模块、函数与行号；最终发布状态以原报告表为准。无可解析回答或进程中断时可能只有部分记录，可按同一 ID 查账本。
+
+文件只供服务账号在服务器上读取，目录 0700、文件 0600，不纳入备份、看板或系统日志。排除请求头、私有端点、密钥、思维链；模型正文含配置密钥或端点主机名时整段遮盖。按调用日滚动保留 30 个上海自然日，在下一次报告调用前清理过期记录。旧失败没有可补录的历史正文。
 
 ## 今日采集、滚动窗口与完整性
 
@@ -602,49 +593,21 @@ data_state为waiting_data/ready/expired_unanalyzed。当前上海日往前含今
 
 显式重读使用可选表 `sleep_analysis_revisions`，引用首份报告的归属日和本次独立成功尝试，同样校验输入、正文、模型元数据、摘要与外键。事务内核对预期当前报告后追加一条不可改删的修订；详情和历史读取最近提交的修订。只有新 Prompt 的显式单夜重读可发布修订，每次至多一次物理请求，计入既有预算。失败时仍展示上次成功报告。恢复核验逐份检查原报告和全部修订。
 
-尝试终态为complete、failed、discarded_input_changed、discarded_already_published或abandoned；模型原始失败正文/思维链不保存。业务请求ID仅用于关联共享预算，不公开。模型元数据长期保留实际model ID、finish_reason、白名单usage和耗时；不因共享model-runtime账本裁剪至30日而丢失。 成功结果若经过单层传输处理，可额外保存transport_normalization=json_string_envelope或single_object_array，分别表示字符串包装解析或单对象数组取出；仅允许这两个可选值，无处理时省略，既有缺该字段的合法元数据继续核验。不保存原始包装/失败响应。输入schema_hash为64位十六进制摘要，与prompt_hash及配置一起参与幂等身份/恢复校验；不保存第二份Schema文本。未知费用不编造。
+尝试终态为complete、failed、discarded_input_changed、discarded_already_published或abandoned；长期报告表仅存成功正文，独立私有诊断见下节。业务请求ID仅用于关联共享预算，不公开。模型元数据长期保留实际model ID、finish_reason、白名单usage和耗时；不因共享model-runtime账本裁剪至30日而丢失。 成功结果若经过单层传输处理，可额外保存transport_normalization=json_string_envelope或single_object_array，分别表示字符串包装解析或单对象数组取出；仅允许这两个可选值，无处理时省略，既有缺该字段的合法元数据继续核验。长期表不保存原始包装或失败响应。输入schema_hash为64位十六进制摘要，与prompt_hash及配置一起参与幂等身份/恢复校验；不保存第二份Schema文本。未知费用不编造。
 
 sleep-analysis-prepare先在线备份并临时恢复核验，再显式创建报告表；启动/GET/daily-run无隐式迁移。入库有容量准入和私有权限，输入上限24KiB、输出上限256KiB；读取/恢复重新校验结构、规范hash、业务字段和引用。无可选报告表的旧有效备份仍可恢复；半套表、错误hash、孤立引用、终态/发布矛盾或同一尝试重复发布均失败，不自动修复旧审计。
 
-调用前保存输入及预算占位/尝试，随后关闭SQLite事务才外呼。模型结果通过校验后重读ready、input_hash、私有source_fingerprint、模型配置与Prompt元数据；发布写事务内guard再次按同一连接核对，在来源不变且未有成功报告时唯一插入。生成中事实/来源/配置变化标discarded_input_changed，候选不展示；已有报告则丢弃重复候选。模型拒绝或缺失必需观察不发布；内部insufficient_input载荷仍是失败而非成功报告。结构校验按固定output_schema_*规则码分类；类型错另用固定output_type_*类别，根值区分string/array/null/scalar，仍不保存真实路径或值；领域业务校验为output_business_mismatch。失败只保留这些白名单码及安全运行元数据，不保存响应正文、校验异常文本、路径或实际值。实际失败随后触及夜晚累计尝试上限时，结果保留failed和原错误，整轮partial；调用前已经达限则blocked_attempts且不调用。
+调用前保存输入及预算占位/尝试，随后关闭SQLite事务才外呼。模型结果通过校验后重读ready、input_hash、私有source_fingerprint、模型配置与Prompt元数据；发布写事务内guard再次按同一连接核对，在来源不变且未有成功报告时唯一插入。生成中事实/来源/配置变化标discarded_input_changed，候选不展示；已有报告则丢弃重复候选。模型拒答或返回不符合 Schema 时记录失败。结构校验按固定output_schema_*规则码分类；类型错另用固定output_type_*类别，根值区分string/array/null/scalar，仍不保存真实路径或值，历史业务校验失败码保留在原审计中。共享账本及报告表的失败记录只保留白名单码与安全运行元数据。实际失败随后触及夜晚累计尝试上限时，结果保留failed和原错误，整轮partial；调用前已经达限则blocked_attempts且不调用。
 
 发布后按当前私有来源指纹比较，变化只显示source_changed及安全原因，保留生成时输入和原结论，不重写、不再次自动调用。读取失败将变化状态设未知。单独Prompt或模型升级不称为源数据变化；已发布报告仍显示自己的版本。输入/报告/尝试现无自动删除任务，未来保留策略不得破坏至少一年证据、每晚唯一或预算审计。
 
 ### 输入、指纹与输出校验
 
-时长基线先对原始秒数求均值，再换算为分钟。30 个已结束日的日负荷取算术均值，相同的小数负荷与该均值比较时差值为零。差值事实的可选 `comparison_text` 同时对照差值和原值相对基线的方向；数值校验的浮点容差不能改变高、低或相等的结论。新候选只能使用输入中实际给出的比较短句，并在本条同时引用原值与差值。已填睡感须在摘要或睡眠观察中写明对应评级并直接引用。温湿度等夜内变化需本通道极值或至少两个有效分段，分段只说明所引时段。同一环境指标的后续分句仍需相应变化证据。评级与比较的引用检查也覆盖替代解释和建议中的事实陈述。
+当前夜单独取证，复盘按同一口径逐夜取证。测量字段包含可用的睡眠时长、阶段累计、评分、心率、HRV、晨起身体电量、前日活动与压力，以及同一睡眠窗口的温湿度、照度与相对声音。环境均值按有效样本数加权，相对声音按能量域聚合，缺测保留缺失。时间范围、有效声音事件及睡感一并投影为[逐晚观测](../src/sleepscape/domain/weekly_review.py)。只有已填写的枚举睡感进入解读。更完整的私有采样质量、来源和载荷摘要用于审计与恢复。
 
-新逐夜摘要至少引用本晚睡眠总时长、累计阶段、评分或已填睡感中的一项。生成校验拒绝常见的采集状态开场，允许在具体睡眠判断之后说明局限。该检查仅用于新候选；已存报告和备份沿用发布时可读合同。
+输入摘要由规范 JSON 计算，排除读取时间和展示暂态。已发布输入、模型回答和质量元数据各有对应存储校验。来源指纹仅用于发现事实修订，历史报告沿用其生成时快照。旧格式复盘和新输入无法直接比对时返回变化未知。
 
-发送用JSON只在ready后构造。核心事实metric为睡眠总时长、平均心率、夜间HRV、前日负荷/压力及四项环境均值；机器名、单位/来源/周期唯一注册在domain/sleep_features.py。可选纳入有效阶段累计、评分、晨起Body Battery、步数、环境min/max/声音峰值。源活动标题、姓名/GPS、身份、URL/Key与自由文本不进入输入；数值由程序计算而非模型计算。
-
-逐夜取证在同一快照按醒来日读取晨起睡感。有已提交的有效评级时，增加可选 `morning_feeling` 对象，`id` 固定为 `F000`，`value` 只能是 `poor`、`fair` 或 `good`。未填或读取失败时省略整个字段，不发送填写时间、其他日期评级或自由文本。该字段加入有值时的输入摘要与来源指纹，允许报告引用并在受保护看板查看生成时选项。旧载荷沿用原结构和摘要。已发布当夜报告若采用过该证据，后来改选可提示来源变化；当时未采用该证据的报告保持原来源比较范围。
-
-睡眠/心率/HRV基线各自使用D−30…D−1来源日，过滤不合法、陈旧或来源错误的值，至少7个有效日才提供均值及本晚差值；不足则保留该指标valid_n、expected_n=30及null，不混用不同指标分母。负荷直接复用D−1与D−31…D−2完整30日比较，缺天、陈旧或基线为零不输出百分比。综合评分/Body Battery标composite_metrics_not_independent，不能作为独立原因。
-
-环境均值来自当前合格来源的有效样本，温湿光按valid_count加权，声音按完整有效秒在能量域聚合，不对dB算术平均。整分钟统计与被睡眠窗口裁剪的时间覆盖分别保留，边缘分钟不假装能精确拆出内部样本。只有数值/计数/单位/严重质量检查通过的样本参与；缺少的样本不插值补0。
-
-输入completeness包含policy_version/policy、quality_state=complete/with_gaps、garmin_core_complete=true、environment_eligible=true、environment_expected_windows/environment_observed_windows、time_quality、四通道channels、warnings和warning_interval_scope。每通道保留count_unit、expected_windows/valid_windows/invalid_windows、expected_count/observed_count/valid_count/usable_count、effective_coverage_ratio、coverage_ratio及max_affected_span_seconds。invalid_windows只计已观察但不完全有效的分钟，valid_windows+invalid_windows=observed_windows，可小于expected_windows；未收到分钟仍进入采样预期分母。资格不使用environment_core_complete=true冒充全部完整。
-
-外发warnings仅保留code/source/metric/window_start/window_end/expected/observed/recoverability；source固定environment，原因限missing_environment_minutes/invalid_channel。省略date、last_checked_at和来源身份，warning_interval_scope固定affected_minute_ranges_clipped_to_sleep；受影响范围不定位缺秒。with_gaps保留warnings及sampling_gaps_present，complete没有缺采warning且所有采样有效。
-
-F类事实、T类15分钟分段、E类事件ID在输入内唯一，均为固定匿名引用。分段按通道coverage保留同口径统计，允许有效覆盖低于99%和缺值null，不重复应用整夜门槛。可选事件最多8个可信声音摘要，优先峰值、同峰按时间，再按时间展示；缺摘要、检测未完整、stored/dropped计数未知或不一致时不能标none_detected。合并包络不表示全时段持续声音，不把摘要条数当声源/觉醒数。跨睡眠边界无法精确裁掉active_seconds的事件不编造裁剪值。
-
-输入最多24KiB UTF-8紧凑JSON，事实最多128、分段最多96、事件最多8。超预算先移除可选分段，再移除非核心背景，分别加timeline_omitted_for_budget/optional_context_omitted_for_budget；不删核心、采样分母、warnings或限制，仍超限则blocked_input_budget。内部报告上限保持8个观测、3个假设/建议；当前模型返回收紧为4—6个观测、至多2个假设/建议，各引用数组1—6个唯一ID；消息总量32KiB、完整请求64KiB、输出4096 token/响应256KiB另受模型层限制。
-
-唯一[system Prompt](../src/sleepscape/resources/sleep-analysis-system.txt)与[Schema](../src/sleepscape/resources/sleep-analysis.schema.json)在resources/随包分发。同一文件内`model_output`是当前模型四字段合同，`output`是内部完整报告合同；没有重复资源。system动态附加model_output，user包含白名单证据JSON及程序固定生成/纠错要求。当前显式json_object仅保证JSON语法；显式json_schema模式才将同一model_output按aliyun-compatible-1派生发送投影，不自动切换。
-
-model_output仅含summary、observations、hypotheses、actions。模型填写文字、类别/因素、有效证据ID及替代解释/观察建议，不回显日期/hash/quality/limitations/status/evidence_level。resources.validate_model_output先按模型合同校验，再由纯领域函数用已核验输入组装完整报告：固定sleep-output-1、日期/hash/质量与全部限制来自输入、status=complete、观察/假设等级limited。完整output和领域规则仍再次校验；程序不能补写正文/引用或删减超额条目。缺类、空观察、无效证据或不合规正文均不发布。原存储、看板与恢复的完整报告格式保持兼容。
-
-传输规范化只允许两个互斥单步：根字符串严格再解析一次为对象，或单元素且该元素为对象的根数组解出对象；之后继续全部校验。重复键/非有限数值、Markdown、空/多元素/嵌套数组、字符串与数组互相包装均不修复。最大输入加纠错的消息预算有回归；schema_hash覆盖唯一Schema文件内各合同，prompt_hash覆盖唯一Prompt，response_mode/profile进入config_fingerprint。[合成样例](contracts/sleep-analysis.example.json)展示内部报告，不代表实际模型返回。
-
-input_hash=sha256(规范JSON)：移除input_hash/data_cutoff_at/is_provisional，采用ensure_ascii=false、sort_keys=true、separators=(",",":"), allow_nan=false的UTF-8。hash包含所发事实、质量/策略、通道计数/分母、warnings、限制和基线，不因再次读取时间变化而变。存储另对包含全部字段的payload原文计算payload_hash，用于完整性核验；不能用重算语义hash绕过字段/数值校验或每晚唯一。
-
-报告source_fingerprint不外发模型，覆盖当前检查的稳定来源身份/质量/观测及同快照30日基线日期、睡眠来源和核心卡片；即使当前不ready也可计算。排除抓取/接收/检查时间及不改变映射的索引元数据。来源变化比较不依赖模型输入必须可生成，不能把缺数据解释为与旧报告一致。
-
-输出schema_version固定sleep-output-1；含summary、observations、hypotheses、actions、limitations及input_quality_state，日期/hash/quality须对应输入。每个evidence_ids数组内部唯一；limitations由程序按原顺序完整复制required_limitations，保持不增加、不遗漏、不重复，本地继续强制唯一与集合相同。成功报告必须有四类观测、有效证据ID、对应类别/假设因素依据、保留全部限制，不能引用null不可用事实；with_gaps须在概况或环境观察说明缺采。报告complete仅表示生成完成，不改写为100%采样完整。insufficient_input必须空观察/假设/建议，并按失败处理。
-
-Schema之外校验必需事实、白名单单位/来源/周期、计数关系/比率、基线分母及派生差值、时间边界、ID唯一、引用和字节预算。数值直接显示生成时证据卡，模型文字不写阿拉伯数字/具体时间/自行换算比例；禁止明显凭据、外链、注入和医疗处置文本。有限规则不能证明所有自然语言因果/方向判断，真实报告仍需对照证据人工核验，不将观测升级为诊断或确定因果。
+[逐夜提示](../src/sleepscape/resources/sleep-analysis-system.txt)和[七日附加提示](../src/sleepscape/resources/sleep-review-system.txt)由程序加载并附相同回答 Schema。模型返回的格式校验见[复盘输入与输出](#输入与输出)。程序补入日期、输入摘要及质量等存储元数据，报告标记为 `sleep-interpretation-1`。结构合法后直接接受模型所写内容。有限 JSON 包装兼容、字节预算、模型拒答和传输错误处理沿用模型协议。
 
 ## 声音事件回听
 

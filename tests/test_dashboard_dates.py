@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.request import OpenerDirector
 
 import pytest
+from environment_samples import sample_profile
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -15,7 +16,7 @@ import sleepscape.app as app_module
 from sleepscape.app import create_app
 from sleepscape.config import Settings
 from sleepscape.domain.dashboard_dates import NightBeforeDisplayStart
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.domain.models import DataRequest, FetchResult, NormalizedBatch
 from sleepscape.services.analysis_views import analysis_view
 from sleepscape.services.daily import prepare_daily
@@ -244,9 +245,7 @@ def test_old_load_baseline_and_daily_collection_plan_are_retained(settings):
 def test_first_visible_night_includes_previous_evening_environment(settings):
     payload = json.loads((ROOT / "tests/fixtures/environment-batch.json").read_text())
     payload["time_anchors"][0]["utc_at"] = "2026-11-17T15:00:00Z"
-    profile = MeasurementProfile.model_validate_json(
-        (ROOT / "tests/fixtures/environment-profile.json").read_text()
-    )
+    profile = sample_profile()
     environment.register_local(
         settings.data_dir, payload["device_id"], "synthetic-profile", profile
     )

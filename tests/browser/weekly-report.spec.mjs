@@ -145,3 +145,17 @@ test("paired evidence opens both the example and the counterexample with distinc
     await panel.getByText("11 月 9 日的夜晚证据", { exact: true }).click();
     await expect(panel.getByRole("link", { name: "打开 2026-11-09 夜晚详情" })).toBeVisible();
 });
+
+test("new weekly interpretation centers the cutoff night and shows the model comparison", async ({page}) => {
+    await page.route("**/api/v1/sleep-reviews/*", r => r.fulfill({json:{window, state:"complete",report:{
+        generated_at:"2026-11-09T01:01:00Z",evidence:{window,target_date:END,nights:Array(7).fill({})},
+        content:{summary:{text:"目标夜睡得偏短。"},garmin:"手表记录。",environment:"卧室较暖。",
+            feeling:"起床时自评一般。",comparison:"比此前六晚醒得早。",possible_reasons:[]},
+    }}}));
+    await page.goto(url);
+    const panel=page.locator(".weekly-report");
+    await panel.locator(":scope > summary").click();
+    await expect(panel.getByText("比此前六晚醒得早。",{exact:true})).toBeVisible();
+    await expect(panel.getByText("起床时自评一般。",{exact:true})).toBeVisible();
+    await expect(panel.getByText(/目标夜 2026-11-09 · 共 7 晚/)).toBeVisible();
+});

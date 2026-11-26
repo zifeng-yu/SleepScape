@@ -13,11 +13,12 @@ from urllib.request import OpenerDirector
 
 import pytest
 import requests
+from environment_samples import sample_profile
 
 from sleepscape.adapters.catalog import daily_request
 from sleepscape.adapters.garmin import GarminError
 from sleepscape.config import Settings
-from sleepscape.domain.environment import EnvironmentBatch, MeasurementProfile
+from sleepscape.domain.environment import EnvironmentBatch
 from sleepscape.domain.models import FetchResult
 from sleepscape.services import daily
 from sleepscape.services.collection import CollectionError, collect
@@ -121,9 +122,7 @@ def test_late_sleep_backfill_updates_existing_dashboard_without_same_day_refetch
 
 
 def test_environment_ingestion_commits_while_daily_network_fetch_is_blocked(settings):
-    profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     payload = EnvironmentBatch.model_validate_json(
         (FIXTURES / "environment-batch.json").read_bytes()
     )

@@ -30,7 +30,14 @@ def _snapshot_reader(settings, connection):
 
 
 def read_snapshot(
-    settings, day: date, *, now=None, build=True, connection=None, include_morning_feeling=True
+    settings,
+    day: date,
+    *,
+    now=None,
+    build=True,
+    connection=None,
+    include_morning_feeling=True,
+    historical_baselines=False,
 ):
     """Release the SQLite transaction before returning; never call a model or write."""
     if type(day) is not date or not 2000 <= day.year <= 2100:
@@ -39,7 +46,9 @@ def read_snapshot(
     view = DashboardService(settings)
     view._now = lambda: clock
     with _snapshot_reader(settings, connection) as reader:
-        context = view.readiness_context(reader, day - timedelta(days=30), day)
+        context = view.readiness_context(
+            reader, day - timedelta(days=30) if historical_baselines else day, day
+        )
         night = view.readiness_night(reader, day, context=context)
         environment = _environment(settings, reader, night, clock)
         readiness = evaluate_readiness(
@@ -50,7 +59,7 @@ def read_snapshot(
             view.readiness_night(
                 reader, day - timedelta(days=offset), context=context, optional=False
             )
-            for offset in range(30, 0, -1)
+            for offset in (range(30, 0, -1) if historical_baselines else ())
         ]
         morning_feeling = None
         feeling_state = None
@@ -89,7 +98,6 @@ def read_snapshot(
             night,
             environment,
             readiness,
-            baseline_nights=baselines,
             data_cutoff_at=clock,
             morning_feeling=morning_feeling,
         )

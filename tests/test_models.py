@@ -644,3 +644,33 @@ def test_usage_and_error_audit_are_whitelist_only():
         "http_status": None,
         "retry_after": None,
     }
+
+
+def test_report_exchange_preserves_rejected_answer_and_wire_request(
+    settings, monkeypatch, tmp_path
+):
+    from sleepscape.storage.model_exchange import logged_request, validation_event
+
+    day = datetime.now(UTC).date()
+    req = logged_request(request(), tmp_path, day, "weekly", day, "a" * 32)
+    value = answer()
+    message = value["choices"][0]["message"]
+    message.update(content='{"unsupported":true}', reasoning_content=PRIVATE)
+    calls, _ = transport(monkeypatch, value)
+    with pytest.raises(ModelError) as err:
+        create_client(load_model_settings(settings)).complete(req)
+    validation_event(req, err.value)
+    events = {
+        p.name.split(".")[-2]: json.loads(p.read_bytes())
+        for p in req.exchange_path.parent.iterdir()
+    }
+    assert events["request"] == json.loads(calls[0][0].data)
+    assert events["response"]["answers"] == [
+        {"content": message["content"], "finish_reason": "stop"}
+    ]
+    assert events["validation"]["code"] == err.value.code
+    assert PRIVATE not in json.dumps(events) and BASE not in json.dumps(events)
+    assert all(p.stat().st_mode & 0o777 == 0o600 for p in req.exchange_path.parent.iterdir())
+    assert req.exchange_path.parent.stat().st_mode & 0o777 == 0o700
+    logged_request(request(), tmp_path, day + timedelta(days=30), "weekly", day, "b" * 32)
+    assert not list(req.exchange_path.parent.iterdir())

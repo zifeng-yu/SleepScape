@@ -17,32 +17,13 @@ def batch_cases():
 
 
 def wire_for(case):
-    source = case["payload"]
-    ids = {row["metric"]: row["id"] for row in source["facts"]}
-    refs = {
-        "sleep": [ids["sleep.total_minutes"]],
-        "body_signals": [ids["sleep.average_heart_rate"], ids["sleep.night_average_hrv"]],
-        "previous_day": [ids["previous.training_load"], ids["previous.average_stress"]],
-        "environment": [ids["environment.temperature_mean"], ids["environment.sound_energy_mean"]],
-    }
     return {
-        "summary": {
-            "text": "手表估计的睡眠时长只能说明睡了多久，晨起感受还要结合本人体验。",
-            "evidence_ids": refs["sleep"],
-        },
-        "observations": [
-            {
-                "category": category,
-                "text": "环境有缺采，难以判断缺口中的声音变化。"
-                if category == "environment"
-                and source["completeness"]["quality_state"] == "with_gaps"
-                else "已有该类观测，仅说明所给证据，不推断因果。",
-                "evidence_ids": evidence,
-            }
-            for category, evidence in refs.items()
-        ],
-        "hypotheses": [],
-        "actions": [],
+        "summary": {"text": "手表记录睡眠 6 小时。"},
+        "garmin": "合成观测。",
+        "environment": "合成环境。",
+        "feeling": None,
+        "comparison": None,
+        "possible_reasons": [],
     }
 
 
@@ -64,7 +45,9 @@ def test_fifty_unique_inputs_share_frozen_template_and_never_repeat(batch_cases)
 
     def invoke(case, request):
         invoked.append((case["case_id"], request))
-        assert json.loads(request.messages[1].content) == case["payload"]
+        assert (
+            json.loads(request.messages[1].content)["target_date"] == case["payload"]["night_date"]
+        )
         return result_for(case)
 
     evaluator = BatchEvaluator(batch_cases, invoke, sink=saved.append)
@@ -75,7 +58,6 @@ def test_fifty_unique_inputs_share_frozen_template_and_never_repeat(batch_cases)
     assert len({row["input_hash"] for row in saved}) == 50
     assert len({row["template_sha256"] for row in saved}) == 1
     assert len({request.messages[0].content for _, request in invoked}) == 1
-    assert len({request.messages[2].content for _, request in invoked}) == 1
     summary = evaluator.summary()
     assert summary["business_pass_count"] == summary["schema_pass_count"] == 50
     assert summary["business_pass_rate_of_requested"] == 1
@@ -149,7 +131,7 @@ def test_data_dependent_template_is_not_an_equivalent_batch(batch_cases, monkeyp
         from sleepscape.models.base import ChatMessage
 
         request = original(payload, **kwargs)
-        request.messages[2] = ChatMessage("user", payload["input_hash"])
+        request.messages[0] = ChatMessage("system", payload["input_hash"])
         return request
 
     monkeypatch.setattr(runner, "_request", changed)
@@ -157,22 +139,22 @@ def test_data_dependent_template_is_not_an_equivalent_batch(batch_cases, monkeyp
         BatchEvaluator(batch_cases[:2], good_invoke)
 
 
-def test_schema_pass_is_separate_from_evidence_business_failure(batch_cases):
+def test_schema_conformant_prose_is_accepted(batch_cases):
     def invoke(case, _request):
         wire = wire_for(case)
-        wire["summary"]["evidence_ids"] = ["F999"]
+        wire["summary"]["text"] = "自主表述，包含数字 42。"
         return ModelResult(json.dumps(wire), "qwen3.8-max", "stop", {"total_tokens": 25})
 
     row = BatchEvaluator(batch_cases[:1], invoke).run_case(0)
     assert row["json_pass"] is row["schema_pass"] is True
-    assert row["business_pass"] is False
-    assert row["outcome"] == "business_failed" and row["error_code"] == "output_business_mismatch"
+    assert row["business_pass"] is True
+    assert row["outcome"] == "passed"
 
 
 def test_model_result_is_rechecked_before_schema_success(batch_cases):
     def invoke(case, _request):
         wire = wire_for(case)
-        del wire["observations"]
+        del wire["garmin"]
         wire["summary"]["text"] = "SYNTHETIC_PRIVATE_RESPONSE"
         return ModelResult(json.dumps(wire), "qwen3.8-max", "stop")
 

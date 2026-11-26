@@ -1,3 +1,4 @@
+import { appendInterpretation, validInterpretation } from "./interpretation.js";
 import { readinessGapLabel } from "./analysis.js";
 import { api } from "./api.js";
 import { add, el } from "./dom.js";
@@ -104,6 +105,18 @@ function evidenceDetails(row, byID) {
 
 function appendReport(body, data, time) {
     const { content, evidence, generated_at } = data.report;
+    if (evidence.target_date) {
+        if (!validInterpretation(content)) {
+            body.append(el("p", "weekly-report-note", "报告结构暂不可读取"));
+            return;
+        }
+        body.append(el("p", "weekly-report-note", `目标夜 ${evidence.target_date} · 共 ${evidence.nights.length} 晚 · 生成于 ${time.dateTime(generated_at)}`));
+        if (data.source_changed === true) body.append(el("p", "weekly-report-note", "生成后观测已更新。"));
+        if (data.source_changed === null) body.append(el("p", "weekly-report-note", "当前来源暂不可核对。"));
+        appendInterpretation(body, content);
+        return;
+    }
+    body.append(el("p", "weekly-report-note", "历史报告 · 保留生成时的解读与引用"));
     const byID = new Map(
         [...evidence.aggregates, ...evidence.comparisons, ...evidence.nights, ...(evidence.pair_checks || [])].map((row) => [row.id, row]),
     );

@@ -5,7 +5,7 @@ const NIGHT = "2026-11-09";
 const URL = `/sleep?view=night&date=${NIGHT}`;
 const PANEL = "#sleep-analysis-panel";
 // Canonical example is authored synthetic evidence, never copied from the private database.
-const example = JSON.parse(fs.readFileSync(new globalThis.URL("../../docs/contracts/sleep-analysis.example.json", import.meta.url), "utf8"));
+const example = JSON.parse(fs.readFileSync(new globalThis.URL("../fixtures/published-sleep-report.json", import.meta.url), "utf8"));
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
 function payload() {
@@ -313,4 +313,18 @@ test("published interpretation is readable while current evidence is still being
     }
     await expect(page.locator(PANEL)).toHaveAttribute("aria-busy", "false");
     await expect(page.locator(PANEL + " .report-observation-group")).toHaveCount(4);
+});
+
+test("nightly interpretation displays model-authored conclusions and optional feeling", async ({page}) => {
+    const data = payload();
+    data.report.content = {
+        schema_version: "sleep-interpretation-1", night_date: NIGHT, status: "complete",
+        summary: {text: "昨晚睡了 6 小时。"}, garmin: "可穿戴记录提示睡眠机会偏短。",
+        environment: "夜间湿度有变化。", feeling: null, possible_reasons: ["可能与作息有关。"], comparison: null,
+    };
+    await route(page, data);
+    const panel = await open(page);
+    await expect(panel.getByText("昨晚睡了 6 小时。", {exact:true})).toBeVisible();
+    await expect(panel.getByText("可能与作息有关。", {exact:true})).toBeVisible();
+    await expect(panel.locator(".sleep-report").getByRole("heading",{name:"晨起睡感"})).toHaveCount(0);
 });

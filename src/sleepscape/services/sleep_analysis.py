@@ -1,6 +1,5 @@
 """Budgeted reports with immutable evidence and one successful publication per night."""
 
-import json
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -9,7 +8,8 @@ from zoneinfo import ZoneInfo
 from sleepscape.domain.analysis_readiness import POLICY_VERSION
 from sleepscape.domain.daily import instant, window
 from sleepscape.domain.sleep_features import SleepAnalysisError
-from sleepscape.models.base import OUTPUT_SCHEMA_ERRORS, ChatMessage, ModelError, ModelRequest
+from sleepscape.domain.weekly_review import night_observations
+from sleepscape.models.base import OUTPUT_SCHEMA_ERRORS, ModelError
 from sleepscape.models.openai_compatible import strict_json
 from sleepscape.models.settings import (
     configuration_fingerprint,
@@ -17,9 +17,8 @@ from sleepscape.models.settings import (
     load_model_settings,
 )
 from sleepscape.resources import (
-    contract_schema,
+    PROMPT_VERSION,
     prompt_metadata,
-    system_prompt,
     validate_model_output,
 )
 from sleepscape.services.backup import check_restore, create_backup
@@ -27,6 +26,7 @@ from sleepscape.services.model_call import call_model
 from sleepscape.services.sleep_inputs import read_snapshot
 from sleepscape.storage import model_runtime as runtime
 from sleepscape.storage import sleep_analysis as store
+from sleepscape.storage.model_exchange import logged_request, validation_event
 from sleepscape.storage.reader import DashboardReader, StorageReadError
 
 ZONE = ZoneInfo("Asia/Shanghai")
@@ -146,6 +146,7 @@ def report_state(settings, day, *, readiness=None):
                         day,
                         build=False,
                         include_morning_feeling=includes_feeling,
+                        historical_baselines=saved["input"]["prompt_version"] != PROMPT_VERSION,
                     )
                     if not includes_feeling or current["feeling_state"] == "available":
                         changed = (
@@ -235,41 +236,10 @@ def report_state(settings, day, *, readiness=None):
 
 
 def _request(payload, *, correction=False):
-    # The model supplies prose and evidence references only. Trusted report
-    # metadata is assembled locally after both wire and business validation.
-    schema = contract_schema("model_output")
-    instructions = (
-        system_prompt()
-        + "\n\n模型输出 JSON Schema（完整字段与约束）：\n"
-        + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-    )
-    messages = [
-        ChatMessage("system", instructions),
-        ChatMessage("user", json.dumps(payload, ensure_ascii=False, separators=(",", ":"))),
-        ChatMessage(
-            "user",
-            "请解释上面的这一晚证据，仅返回以下四个字段组成的JSON对象："
-            + "、".join(schema["required"])
-            + "。直接以{开头、}结尾，不要包装字符串或数组，也不要只返回observations列表。"
-            + "用一至两句说明昨晚最值得知道的表现，引用直接相关的时长、阶段、评分或睡感。"
-            + "不写数字、时刻、百分比或证据编号；编号仅放evidence_ids。"
-            + "不提供诊断、用药或治疗指令；证据有限时说清具体哪项判断受限。"
-            + "比较须同时引用本晚或前日原值；睡眠类须引用时长事实。"
-            + "单个evidence_ids只留直接依据，最多六个。它不是整晚证据的目录。"
-            + "输出前核对条数：四类观察各一条，假设和建议各零或一条，每条假设一个替代解释。",
-        ),
-    ]
-    if correction:
-        messages.append(
-            ChatMessage(
-                "user",
-                "上次输出未通过合同验证。摘要先写有依据的睡眠表现。"
-                "比较仅照录 comparison_text 并引原值和差值，已填睡感按原评级写明并引用。"
-                "缺采放在环境观察。返回四字段 JSON 对象、四类观察与有效引用。"
-                "正文不用数字，不输出医疗结论、Markdown 或额外字段。",
-            )
-        )
-    return ModelRequest(messages, schema, schema_name="sleepscape_sleep_report")
+    from sleepscape.resources.weekly_review import observation_request
+
+    evidence = {"target_date": payload["night_date"], "nights": [night_observations(payload)]}
+    return observation_request(evidence, correction=correction)
 
 
 def _result(day, state, *, code=None, calls=0):
@@ -348,17 +318,19 @@ def _process_night(settings, day, ledger, *, now_fn, caller, sleeper, revise=Fal
         output = None
         try:
             calls += 1
+            request = logged_request(
+                request,
+                settings.data_dir,
+                clock.astimezone(runtime.ZONE).date(),
+                "nightly",
+                day,
+                request_id,
+            )
             reply = caller(model, request)
             usage = reply.usage
             candidate = strict_json(reply.text)
-            try:
-                output = validate_model_output(candidate, payload)
-            except SleepAnalysisError as exc:
-                if exc.code == "model_insufficient_input":
-                    raise ModelError("model_insufficient_input") from None
-                raise ModelError("output_business_mismatch", retryable=True) from None
-            if output["status"] != "complete":
-                raise ModelError("output_schema_mismatch", retryable=True)
+            output = validate_model_output(candidate, payload)
+            validation_event(request)
         except ModelError as exc:
             failure = exc
         except (KeyboardInterrupt, SystemExit):
@@ -391,6 +363,7 @@ def _process_night(settings, day, ledger, *, now_fn, caller, sleeper, revise=Fal
                 retry_after=failure.retry_after,
                 now=now_fn(),
             )
+            validation_event(request, failure)
             delay = failure.retry_after if failure.retry_after is not None else 1
             eligible_retry = failure.code in RETRY_ERRORS and (
                 failure.retryable or failure.code in CORRECTION_ERRORS

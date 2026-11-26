@@ -4,7 +4,6 @@ This module never opens a database, reads credentials or calls a model. Scenario
 labels are test metadata only; the request uses the unmodified project template.
 """
 
-import copy
 import math
 import random
 from datetime import UTC, date, datetime, timedelta
@@ -16,33 +15,17 @@ from sleepscape.domain.sleep_features import build_sleep_input
 from sleepscape.resources import validate_sleep_input
 
 SCENARIOS = (
-    "rest_dark_complete_no_baseline",
-    "training_warm_sound_gap_sparse_baseline",
-    "stress_light_events_independent_baselines",
+    "rest_dark_complete",
+    "training_warm_sound_gap",
+    "stress_light_events",
     "short_sleep_cool_light_gap",
-    "long_sleep_humid_events_full_baseline",
-    "dry_room_temperature_gap_no_baseline",
-    "lower_hrv_dark_complete_threshold_baseline",
+    "long_sleep_humid_events",
+    "dry_room_temperature_gap",
+    "lower_hrv_dark_complete",
     "exact_99_percent_missing_minutes",
-    "sound_events_truncated_full_baseline",
+    "sound_events_truncated",
     "five_affected_minutes_sound_gap",
 )
-
-
-def _baselines(night, day, count, rng, *, hrv_missing=False):
-    result = []
-    for offset in range(1, count + 1):
-        when = day - timedelta(days=offset)
-        cards = copy.deepcopy(night["cards"])
-        for card in cards.values():
-            card["source_date"] = when.isoformat()
-        cards["sleep_seconds"]["value"] = rng.randint(390, 510) * 60
-        cards["average_heart_rate"]["value"] = rng.randint(48, 63)
-        cards["night_average_hrv"]["value"] = rng.randint(36, 78)
-        if hrv_missing and offset == 1:
-            cards["night_average_hrv"].update(value=None, state="missing")
-        result.append({"date": when.isoformat(), "cards": cards})
-    return result
 
 
 def _night(index, scenario, rng):
@@ -206,28 +189,12 @@ def generate_cases(seed=20261118, count=50):
         scenario = index % len(SCENARIOS)
         day, start, cutoff, night, environment = _night(index, scenario, rng)
         _environment(environment, start, scenario, rng)
-        baseline_count = (0, 5, 7, 14, 30, 0, 7, 14, 30, 5)[scenario]
-        baseline = _baselines(night, day, baseline_count, rng, hrv_missing=scenario == 2)
-        if baseline_count >= 14:
-            mean = rng.uniform(30, 160)
-            night["load_comparison"] = {
-                "state": "available",
-                "target_date": (day - timedelta(days=1)).isoformat(),
-                "baseline_start": (day - timedelta(days=31)).isoformat(),
-                "baseline_end": (day - timedelta(days=2)).isoformat(),
-                "baseline_valid_days": 30,
-                "baseline_fresh_days": 30,
-                "baseline_required_days": 30,
-                "baseline_mean": mean,
-                "change_percent": (night["cards"]["training_load"]["value"] / mean - 1) * 100,
-            }
         readiness = evaluate_readiness(day, night, environment, now=cutoff, lookback_days=31)
         payload = build_sleep_input(
             day,
             night,
             environment,
             readiness,
-            baseline_nights=baseline,
             data_cutoff_at=cutoff,
             synthetic=True,
         )

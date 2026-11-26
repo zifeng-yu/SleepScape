@@ -15,6 +15,7 @@ from pathlib import Path
 from uuid import UUID
 
 from sleepscape.domain.analysis_readiness import READABLE_COVERAGE_POLICIES
+from sleepscape.storage.repository import secure_database_files
 from sleepscape.storage.usage import CapacityError, is_disk_full, require_capacity
 
 ANALYSIS_VERSION = 1
@@ -536,13 +537,6 @@ def _database(data_dir: Path, *, writable=False):
             connection.close()
 
 
-def _secure(data_dir: Path):
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        path = Path(data_dir) / ("sleepscape.sqlite3" + suffix)
-        if path.exists():
-            path.chmod(0o600)
-
-
 def migrate_analysis(data_dir: Path) -> dict:
     """Explicit optional migration; a service must verify a backup before calling."""
     try:
@@ -566,7 +560,7 @@ def migrate_analysis(data_dir: Path) -> dict:
                     ),
                 )
                 analysis_available(connection)
-        _secure(data_dir)
+        secure_database_files(data_dir)
         return {"status": "initialized", "schema_version": ANALYSIS_VERSION}
     except AnalysisStorageError:
         raise
@@ -777,7 +771,7 @@ def save_results(data_dir: Path, results: list[dict], *, run_id: str) -> dict:
                         (value["night_date"], latest_id),
                     )
                     updated += 1
-        _secure(data_dir)
+        secure_database_files(data_dir)
         return {
             "status": "saved",
             "inserted": inserted,

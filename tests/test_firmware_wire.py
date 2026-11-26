@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from environment_samples import PROFILE_TEMPLATE, sample_profile
 from fastapi.testclient import TestClient
 
 from sleepscape.app import create_app
@@ -115,9 +116,7 @@ def web(tmp_path, monkeypatch):
     for name in tuple(os.environ):
         if name.startswith(("SLEEPSCAPE_", "GARMIN_PERSONAL_API_")):
             monkeypatch.delenv(name)
-    profile = MeasurementProfile.model_validate_json(
-        (ROOT / "tests/fixtures/environment-profile.json").read_bytes()
-    )
+    profile = sample_profile()
     settings = Settings(_env_file=None, data_dir=tmp_path / "data", environment_ingest_enabled=True)
     storage.register(settings.data_dir, "synthetic-device", "synthetic-profile", profile, TOKEN)
     historical = profile.model_dump(mode="json")
@@ -297,20 +296,17 @@ def test_registered_profile_examples_match_compiled_sensor_configuration(native)
     compiled = json.loads(result.stdout)
     required = {"firmware_version", "light_sensor", "light_measurement", "i2c_bus"}
     assert required <= compiled.keys()
-    for path in (
-        ROOT / "firmware/profile.example.json",
-        ROOT / "tests/fixtures/environment-profile.json",
-    ):
-        registered = MeasurementProfile.model_validate_json(path.read_bytes())
-        actual = registered.model_dump(mode="json")
-        for name, expected in compiled.items():
-            if isinstance(expected, dict):
-                assert actual[name].keys() == expected.keys()
-                for parameter, value in expected.items():
-                    found = actual[name][parameter]
-                    if isinstance(value, float):
-                        assert found == pytest.approx(value, rel=1e-12, abs=1e-12)
-                    else:
-                        assert found == value, f"{path.name}: {name}.{parameter} drift"
-            else:
-                assert actual[name] == expected, f"{path.name}: firmware {name} configuration drift"
+    path = PROFILE_TEMPLATE
+    registered = MeasurementProfile.model_validate_json(path.read_bytes())
+    actual = registered.model_dump(mode="json")
+    for name, expected in compiled.items():
+        if isinstance(expected, dict):
+            assert actual[name].keys() == expected.keys()
+            for parameter, value in expected.items():
+                found = actual[name][parameter]
+                if isinstance(value, float):
+                    assert found == pytest.approx(value, rel=1e-12, abs=1e-12)
+                else:
+                    assert found == value, f"{path.name}: {name}.{parameter} drift"
+        else:
+            assert actual[name] == expected, f"{path.name}: firmware {name} configuration drift"

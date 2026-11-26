@@ -2,11 +2,12 @@
 
 import json
 import os
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 import requests
+from test_sync import covered
 
 from sleepscape.adapters.garmin import GarminError
 from sleepscape.config import Settings
@@ -68,17 +69,6 @@ class Gateway:
             raise self.error
         payload = [] if request.resource == "activities_page" else None
         return FetchResult(request, payload, NOW.isoformat(), 200)
-
-
-def covered(plan, resource):
-    return [
-        day
-        for request in plan
-        if request.resource == resource
-        for day in dates(
-            date.fromisoformat(request.start_date), date.fromisoformat(request.end_date)
-        )
-    ]
 
 
 @pytest.mark.parametrize("n", [1, 7, 31])

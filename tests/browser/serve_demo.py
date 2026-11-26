@@ -211,8 +211,8 @@ def seed(directory: Path):
 def seed_environment(directory: Path):
     """Exercise production contracts/storage/indexing using only synthetic observations."""
     profile = MeasurementProfile.model_validate_json(
-        (FIXTURES / "environment-profile.json").read_bytes()
-    )
+        (FIXTURES.parents[1] / "firmware/profile.example.json").read_bytes()
+    ).model_copy(update={"placement_id": "synthetic-bedside"})
     template = json.loads((FIXTURES / "environment-batch.json").read_bytes())
     device = "browser-private-synthetic-device"
     initial = "browser-private-profile-a"

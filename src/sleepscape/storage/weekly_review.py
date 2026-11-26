@@ -11,6 +11,7 @@ from pathlib import Path
 from sleepscape.domain.sleep_features import canonical_json
 from sleepscape.models.audit import safe_usage
 from sleepscape.models.base import ERROR_CODES
+from sleepscape.models.openai_compatible import MAX_RESPONSE_BYTES
 from sleepscape.resources.weekly_review import (
     MAX_EVIDENCE_BYTES,
     validate_evidence,
@@ -362,7 +363,7 @@ def load_report(db, end):
     if not row:
         return None
     evidence = _input(row)
-    content = _decode(row["content"], MAX_EVIDENCE_BYTES)
+    content = _decode(row["content"], MAX_RESPONSE_BYTES)
     metadata = _decode(row["metadata"], 4096)
     if (
         digest([end, row["input_id"], row["request_id"], row["generated_at"], content, metadata])

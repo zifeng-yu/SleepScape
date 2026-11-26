@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 import requests
+from test_sleep_features import example as read_report_example
 
 from sleepscape.config import Settings
 from sleepscape.services import backup_bundle
@@ -24,7 +25,6 @@ from sleepscape.storage.repository import Repository
 from sleepscape.storage.sleep_analysis import SleepAnalysisStorageError
 from sleepscape.storage.usage import CapacityError
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "docs/contracts/sleep-analysis.example.json"
 CREATED = "2001-01-02T02:00:00Z"
 STARTED = "2001-01-02T02:01:00Z"
 FINISHED = "2001-01-02T02:02:00Z"
@@ -54,7 +54,7 @@ def data_dir(tmp_path):
 
 @pytest.fixture
 def example():
-    return json.loads(EXAMPLE.read_text())
+    return read_report_example()
 
 
 def settings(data_dir):

@@ -82,6 +82,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def secure_database_files(data_dir: Path) -> None:
+    """Restrict the main database and its existing SQLite sidecar files to the owner."""
+    database = Path(data_dir) / "sleepscape.sqlite3"
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        path = database.with_name(database.name + suffix)
+        if path.exists():
+            path.chmod(0o600)
+
+
 class Repository:
     """One connection per repository; transactions keep snapshots and current rows consistent."""
 
@@ -99,7 +108,7 @@ class Repository:
             self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.executescript(_SCHEMA)
-            self._secure_files()
+            secure_database_files(self.data_dir)
         except Exception:
             self._connection.close()
             raise
@@ -113,12 +122,6 @@ class Repository:
     def close(self) -> None:
         self._connection.close()
 
-    def _secure_files(self) -> None:
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            path = Path(str(self.path) + suffix)
-            if path.exists():
-                path.chmod(0o600)
-
     def start_run(self, plan: dict) -> str:
         run_id = uuid4().hex
         with self._connection:
@@ -126,7 +129,7 @@ class Repository:
                 "INSERT INTO runs (id, started_at, status, plan_json) VALUES (?, ?, ?, ?)",
                 (run_id, _now(), "running", _json(plan)),
             )
-        self._secure_files()
+        secure_database_files(self.data_dir)
         return run_id
 
     def save_snapshot(self, run_id: str, result: FetchResult, batch: NormalizedBatch) -> dict:
@@ -184,7 +187,7 @@ class Repository:
                 issues=issues,
                 metrics=batch.metrics,
             )
-        self._secure_files()
+        secure_database_files(self.data_dir)
         return {
             "snapshot_id": snapshot_id,
             "new_snapshot": new_snapshot,
@@ -285,7 +288,7 @@ class Repository:
             self._insert_request(
                 run_id, request, _now(), http_status, "failed", error_code=error_code
             )
-        self._secure_files()
+        secure_database_files(self.data_dir)
 
     def finish_run(self, run_id: str, status: str, summary: dict) -> None:
         with self._connection:
@@ -295,7 +298,7 @@ class Repository:
             )
             if cursor.rowcount != 1:
                 raise ValueError("Unknown collection run")
-        self._secure_files()
+        secure_database_files(self.data_dir)
 
     def latest_run(self) -> dict | None:
         row = self._connection.execute(

@@ -81,28 +81,12 @@ def test_coverage_scenarios_represent_real_counts_and_boundary_limits(cases):
             assert "sampling_gaps_present" in payload["required_limitations"]
 
 
-def test_background_context_includes_independent_baselines_and_both_directions(cases):
-    denominators = set()
-    load_changes = []
+def test_request_data_contains_only_nightly_observations(cases):
     for row in cases:
-        payload = row["payload"]
-        denominators.add(metric(payload, "baseline.average_heart_rate")["valid_n"])
-        if row["scenario"] == "stress_light_events_independent_baselines":
-            assert metric(payload, "baseline.average_heart_rate")["valid_n"] == 7
-            assert metric(payload, "baseline.average_heart_rate")["quality"] == "valid"
-            assert metric(payload, "baseline.night_average_hrv")["valid_n"] == 6
-            assert metric(payload, "baseline.night_average_hrv")["quality"] == "unavailable"
-        if row["scenario"] == "rest_dark_complete_no_baseline":
-            assert metric(payload, "previous.training_load")["value"] == 0
-            assert "baseline_insufficient" in payload["required_limitations"]
-        for item in payload["facts"]:
-            if item["metric"] == "comparison.training_load_percent":
-                load_changes.append(item["value"])
-    assert denominators == {0, 5, 7, 14, 30}
-    assert min(load_changes) < 0 < max(load_changes)
+        assert all(f["period"] in ("night", "previous_day") for f in row["payload"]["facts"])
 
 
-def test_events_timeline_omission_and_clock_quality_are_explicit(cases):
+def test_events_and_clock_quality_are_explicit(cases):
     payloads = [row["payload"] for row in cases]
     assert {p["event_status"] for p in payloads} >= {
         "available",
@@ -111,16 +95,13 @@ def test_events_timeline_omission_and_clock_quality_are_explicit(cases):
         "context_truncated",
     }
     assert {p["completeness"]["time_quality"] for p in payloads} == {"anchored", "estimated"}
-    assert any(p["timeline"] for p in payloads)
-    assert any(not p["timeline"] for p in payloads)
+    assert all(not p["timeline"] for p in payloads)
     for row in cases:
         payload = row["payload"]
-        if row["scenario"] == "sound_events_truncated_full_baseline":
+        if row["scenario"] == "sound_events_truncated":
             assert len(payload["events"]) == 8
             assert payload["event_status"] == "context_truncated"
             assert "event_context_truncated" in payload["required_limitations"]
-        if not payload["timeline"]:
-            assert "timeline_omitted_for_budget" in payload["required_limitations"]
 
 
 @pytest.mark.parametrize("count", [0, 51, -1, True, 1.5])

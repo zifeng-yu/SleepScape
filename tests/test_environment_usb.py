@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from environment_samples import sample_profile
 
 from sleepscape.config import Settings
 from sleepscape.domain.environment import MeasurementProfile
@@ -26,7 +27,7 @@ SPEC.loader.exec_module(fw)
 @pytest.fixture
 def local(tmp_path):
     settings = Settings(_env_file=None, data_dir=tmp_path / "data")
-    profile = json.loads((ROOT / "tests/fixtures/environment-profile.json").read_text())
+    profile = sample_profile().model_dump(mode="json")
     profile["firmware_version"] = "0.3.0"
     profile["placement_id"] = "bench-usb"
     model = MeasurementProfile.model_validate(profile)

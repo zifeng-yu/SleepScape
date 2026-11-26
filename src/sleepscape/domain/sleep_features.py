@@ -1,11 +1,9 @@
 """Pure bounded anonymous sleep evidence, numerical preparation and semantic validation."""
 
-import copy
 import hashlib
 import json
 import math
 import re
-import statistics
 from datetime import UTC, date, datetime, timedelta
 
 from sleepscape.domain.analysis_readiness import (
@@ -13,12 +11,10 @@ from sleepscape.domain.analysis_readiness import (
     MAX_LIGHT_BUS_LOST_SAMPLES,
     POLICY_VERSION,
     READABLE_COVERAGE_POLICIES,
-    _card_state,
     _usable_channel,
     evaluate_readiness,
 )
 from sleepscape.domain.morning_feeling import Feeling
-from sleepscape.domain.sleep_claims import comparison_phrase, nightly_claims_supported
 
 MAX_INPUT_BYTES = 24 * 1024
 MORNING_FEELING_EVIDENCE_ID = "F000"
@@ -242,70 +238,6 @@ def environment_statistics(rows):
     return result
 
 
-def _baseline_facts(day, night, baseline_nights):
-    lookup = {}
-    for item in baseline_nights:
-        when = date.fromisoformat(item["date"])
-        if day - timedelta(days=30) <= when < day:
-            _assert(when not in lookup)
-            lookup[when] = item
-    output = []
-    insufficient = False
-    for name, card_name, scale in (
-        ("sleep_total_minutes", "sleep_seconds", 60),
-        ("average_heart_rate", "average_heart_rate", 1),
-        ("night_average_hrv", "night_average_hrv", 1),
-    ):
-        values = []
-        for when, item in lookup.items():
-            card = item.get("cards", {}).get(card_name, {})
-            unit, resources = {
-                "sleep_seconds": ("s", {"sleep", "sleep_summaries"}),
-                "average_heart_rate": ("bpm", {"sleep", "sleep_summaries"}),
-                "night_average_hrv": ("ms", {"hrv", "hrv_summaries"}),
-            }[card_name]
-            if _card_state(card, when, unit, resources, False) == "available":
-                value = card.get("value")
-                if _number(value) and value >= 0:
-                    scaled = value / scale
-                    low, high = FACT_REGISTRY[f"baseline.{name}"][3:]
-                    if low <= scaled <= high:
-                        values.append(value)
-        # Average in the source unit, then convert once as for the current night.
-        mean = statistics.mean(values) / scale if len(values) >= 7 else None
-        insufficient |= mean is None
-        output.append(_fact(f"baseline.{name}", mean, len(values), 30))
-        if mean is not None:
-            output.append(
-                _fact(
-                    f"comparison.{name}_delta",
-                    night["cards"][card_name]["value"] / scale - mean,
-                    len(values),
-                    30,
-                )
-            )
-    comparison = night.get("load_comparison", {})
-    if (
-        comparison.get("state") == "available"
-        and comparison.get("baseline_valid_days") == 30
-        and comparison.get("baseline_fresh_days") == 30
-        and comparison.get("baseline_required_days") == 30
-        and comparison.get("target_date") == (day - timedelta(days=1)).isoformat()
-        and comparison.get("baseline_start") == (day - timedelta(days=31)).isoformat()
-        and comparison.get("baseline_end") == (day - timedelta(days=2)).isoformat()
-        and _number(comparison.get("baseline_mean"))
-        and comparison["baseline_mean"] > 0
-        and _number(comparison.get("change_percent"))
-    ):
-        output += [
-            _fact("baseline.training_load", comparison["baseline_mean"], 30, 30),
-            _fact("comparison.training_load_percent", comparison["change_percent"], 30, 30),
-        ]
-    else:
-        insufficient = True
-    return output, insufficient
-
-
 def _events(environment, rows, start, end, summary):
     events = []
     incomplete = False
@@ -369,60 +301,27 @@ def _events(environment, rows, start, end, summary):
     return [{"id": f"E{i:03}", **item} for i, item in enumerate(events, 1)], status
 
 
-def _timeline(day, night, environment, start, end, cutoff):
-    bins = []
-    left = start
-    while left < end:
-        right = min(left + timedelta(minutes=15), end)
-        rows = environment_minutes(environment, left, right)
-        if not rows:
-            left = right
-            continue
-        part = copy.deepcopy(night)
-        part["sleep"]["start_at"], part["sleep"]["end_at"] = _stamp(left), _stamp(right)
-        part["cards"]["sleep_seconds"]["value"] = (right - left).total_seconds()
-        summary = evaluate_readiness(day, part, environment, now=cutoff, lookback_days=31)[
-            "environment_summary"
-        ]
-        if not summary or not summary["count_exact"]:
-            return []
-        values = environment_statistics(rows)
-        bins.append(
-            {
-                "id": f"T{len(bins) + 1:03}",
-                "start_at": _stamp(left),
-                "end_at": _stamp(right),
-                "profile_segment": "segment-1",
-                "temperature_c": values["temperature_c"]["mean"],
-                "humidity_pct": values["relative_humidity_pct"]["mean"],
-                "illuminance_lux": values["illuminance_lux"]["mean"],
-                "sound_dbfs": values["sound_relative"]["mean"],
-                "coverage": _coverage(summary["channels"]),
-            }
-        )
-        left = right
-    return bins
-
-
 def build_sleep_input(
     day,
     night,
     environment,
     readiness,
     *,
-    baseline_nights=(),
     data_cutoff_at,
     synthetic=False,
     morning_feeling=None,
+    allow_expired=False,
 ):
     """Construct a bounded anonymous snapshot; neither source values nor the gate are changed."""
     try:
+        state = readiness.get("data_state")
+        if state != "ready" and not (allow_expired and state == "expired_unanalyzed"):
+            raise SleepAnalysisError("analysis_not_ready")
         return _build(
             day,
             night,
             environment,
             readiness,
-            baseline_nights,
             data_cutoff_at,
             synthetic,
             morning_feeling,
@@ -433,10 +332,10 @@ def build_sleep_input(
         raise SleepAnalysisError("invalid_analysis_input") from None
 
 
-def _build(day, night, environment, readiness, baseline_nights, cutoff, synthetic, morning_feeling):
+def _build(day, night, environment, readiness, cutoff, synthetic, morning_feeling):
     _assert(type(day) is date and type(synthetic) is bool)
     cutoff = _instant(cutoff)
-    if readiness.get("data_state") != "ready" or readiness.get("core_ready") is not True:
+    if readiness.get("core_ready") is not True:
         raise SleepAnalysisError("analysis_not_ready")
     actual = evaluate_readiness(day, night, environment, now=cutoff, lookback_days=31)
     for key in (
@@ -514,11 +413,6 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
             and FACT_REGISTRY[name][3] <= card["value"] <= FACT_REGISTRY[name][4]
         ):
             facts.append(_fact(name, card["value"]))
-    baseline, insufficient = _baseline_facts(day, night, baseline_nights)
-    for fact in baseline:
-        if phrase := comparison_phrase(fact["metric"], fact["value"]):
-            fact["comparison_text"] = phrase
-    facts.extend(baseline)
     limitations = {
         "wearable_estimates",
         "relative_sound_only",
@@ -531,8 +425,6 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
         limitations.add("no_stage_timeline")
     if "clock_error_unknown" in actual["limitations"]:
         limitations.add("clock_error_unknown")
-    if insufficient:
-        limitations.add("baseline_insufficient")
     if actual["quality_state"] == "with_gaps":
         limitations.add("sampling_gaps_present")
     if any(_instant(r["utc_start"]) < start or _instant(r["utc_end"]) > end for r in rows):
@@ -568,7 +460,7 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
             "warning_interval_scope": "affected_minute_ranges_clipped_to_sleep",
         },
         "facts": [{"id": f"F{i:03}", **item} for i, item in enumerate(facts, 1)],
-        "timeline": _timeline(day, night, environment, start, end, cutoff),
+        "timeline": [],
         "events": events,
         "event_status": event_status,
         "required_limitations": sorted(limitations),
@@ -578,10 +470,6 @@ def _build(day, night, environment, readiness, baseline_nights, cutoff, syntheti
             "id": MORNING_FEELING_EVIDENCE_ID,
             "value": Feeling(morning_feeling).value,
         }
-    if len(canonical_json(payload).encode()) > MAX_INPUT_BYTES:
-        payload["timeline"] = []
-        limitations.add("timeline_omitted_for_budget")
-        payload["required_limitations"] = sorted(limitations)
     if len(canonical_json(payload).encode()) > MAX_INPUT_BYTES:
         payload["facts"] = [f for f in payload["facts"] if f["metric"] in CORE_METRICS]
         limitations.add("optional_context_omitted_for_budget")
@@ -623,6 +511,26 @@ def validate_input_semantics(payload):
         raise
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise SleepAnalysisError("invalid_analysis_input") from None
+
+
+_COMPARISONS = {
+    "comparison.sleep_total_minutes_delta": ("sleep.total_minutes", "睡眠时长", "长于", "短于"),
+    "comparison.average_heart_rate_delta": (
+        "sleep.average_heart_rate",
+        "夜间平均心率",
+        "高于",
+        "低于",
+    ),
+    "comparison.night_average_hrv_delta": ("sleep.night_average_hrv", "夜间HRV", "高于", "低于"),
+    "comparison.training_load_percent": ("previous.training_load", "前日负荷", "高于", "低于"),
+}
+
+
+def comparison_phrase(metric, delta):
+    if metric not in _COMPARISONS or delta is None:
+        return None
+    _, name, up, down = _COMPARISONS[metric]
+    return name + (up if delta > 0 else down if delta < 0 else "等于") + "个人均值"
 
 
 def _validate_comparison(fact, expected):
@@ -831,52 +739,6 @@ def opens_with_collection_status(text):
             lead,
         )
     )
-
-
-def assemble_model_output(candidate, input_payload):
-    """Add only program-owned metadata to an already structurally validated answer.
-
-    Source input must have passed its contract. No model text, citation or claim
-    is supplied or repaired here; the original stored report contract is kept.
-    """
-    try:
-        _assert(set(candidate) == {"summary", "observations", "hypotheses", "actions"})
-        _assert(set(candidate["summary"]) == {"text", "evidence_ids"})
-        summary = candidate["summary"]
-        sleep_ids = {
-            fact["id"]
-            for fact in input_payload["facts"]
-            if fact["metric"].startswith("sleep.")
-            and (fact["metric"].endswith("_minutes") or fact["metric"] == "sleep.score")
-        }
-        if feeling := input_payload.get("morning_feeling"):
-            sleep_ids.add(feeling["id"])
-        _assert(sleep_ids.intersection(summary["evidence_ids"]))
-        _assert(not opens_with_collection_status(summary["text"]))
-        for group, fields in (
-            ("observations", {"category", "text", "evidence_ids"}),
-            ("hypotheses", {"factor", "text", "evidence_ids", "alternatives"}),
-            ("actions", {"kind", "text", "observe", "evidence_ids"}),
-        ):
-            _assert(isinstance(candidate[group], list))
-            _assert(all(isinstance(row, dict) and set(row) == fields for row in candidate[group]))
-        _assert(nightly_claims_supported(candidate, input_payload))
-        report = {
-            "schema_version": "sleep-output-1",
-            "night_date": input_payload["night_date"],
-            "input_hash": input_payload["input_hash"],
-            "input_quality_state": input_payload["completeness"]["quality_state"],
-            "status": "complete",
-            **copy.deepcopy(candidate),
-            "limitations": copy.deepcopy(input_payload["required_limitations"]),
-        }
-        for group in ("observations", "hypotheses"):
-            for claim in report[group]:
-                claim["evidence_level"] = "limited"
-        validate_output_semantics(report, input_payload)
-        return report
-    except (SleepAnalysisError, ValueError, TypeError, KeyError, RecursionError):
-        raise SleepAnalysisError("invalid_analysis_output") from None
 
 
 def validate_output_semantics(payload, input_payload):

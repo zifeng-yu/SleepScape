@@ -1,5 +1,5 @@
 {
-  "description": "仅用于当前可执行合同核验的自创合成样例，不是用户数据或真实模型报告。程序证据卡提供数值，报告文字解释方向与缺采限制。",
+  "description": "已发布历史格式的合成报告，用于读取、恢复和看板回归测试。",
   "input": {
     "schema_version": "sleep-input-1",
     "synthetic": true,

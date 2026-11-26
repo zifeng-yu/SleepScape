@@ -19,6 +19,7 @@ from sleepscape.models.audit import safe_usage
 from sleepscape.models.base import ChatMessage, ModelError, ModelRequest, ModelResult
 from sleepscape.models.schema_transport import SCHEMA_PROFILES, transport_schema
 from sleepscape.models.settings import RESPONSE_MODES, ModelSettings, read_api_key
+from sleepscape.storage.model_exchange import write_event
 
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_REQUEST_BYTES = 64 * 1024
@@ -260,6 +261,34 @@ def _http_error(error: HTTPError) -> ModelError:
         error.close()
 
 
+def _log_answer(request, result, key, host):
+    if request.exchange_path is None:
+        return
+    choices = result.get("choices")
+    answers = []
+    for choice in choices if isinstance(choices, list) else []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if isinstance(message, dict):
+            answer = {
+                k: message[k] for k in ("content", "refusal") if isinstance(message.get(k), str)
+            }
+            for k, value in answer.items():
+                if key in value or host.lower() in value.lower():
+                    answer[k] = "[redacted]"
+            reason = choice.get("finish_reason")
+            answer["finish_reason"] = (
+                reason if reason in ("stop", "length", "content_filter", "tool_calls") else None
+            )
+            answers.append(answer)
+    write_event(
+        request,
+        "response",
+        {"http_status": 200, "answers": answers, "usage": safe_usage(result.get("usage"))},
+    )
+
+
 class OpenAICompatibleClient:
     def __init__(self, settings: ModelSettings) -> None:
         self.settings = settings
@@ -278,6 +307,7 @@ class OpenAICompatibleClient:
                 for item in request.messages
             ):
                 raise ModelError("invalid_model_request")
+            write_event(request, "request", json.loads(payload))
             call = Request(
                 self.settings.endpoint,
                 data=payload,
@@ -305,6 +335,7 @@ class OpenAICompatibleClient:
             result = strict_json(raw)
             if not isinstance(result, dict):
                 raise ModelError("invalid_response")
+            _log_answer(request, result, key, host)
             if result.get("model") not in self.settings.accepted_models:
                 raise ModelError("model_mismatch")
             choices = result.get("choices")
@@ -401,7 +432,9 @@ class OpenAICompatibleClient:
         except ModelError:
             raise
         except HTTPError as exc:
-            raise _http_error(exc) from None
+            error = _http_error(exc)
+            write_event(request, "response", {"http_status": error.http_status, "code": error.code})
+            raise error from None
         except TimeoutError:
             raise ModelError("request_timeout", retryable=True) from None
         except (URLError, OSError, HTTPException):

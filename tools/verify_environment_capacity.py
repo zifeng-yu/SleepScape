@@ -46,8 +46,8 @@ def _space(directory: Path) -> dict:
 def _seed(directory: Path, days: int, single_boot: bool) -> None:
     fixtures = ROOT / "tests/fixtures"
     profile = MeasurementProfile.model_validate_json(
-        (fixtures / "environment-profile.json").read_bytes()
-    )
+        (ROOT / "firmware/profile.example.json").read_bytes()
+    ).model_copy(update={"placement_id": "synthetic-bedside"})
     template = json.loads((fixtures / "environment-batch.json").read_bytes())
     environment.register_local(directory, "synthetic-device", "synthetic-profile", profile)
     with closing(sqlite3.connect(directory / "sleepscape.sqlite3")) as connection:

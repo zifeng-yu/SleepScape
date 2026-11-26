@@ -13,7 +13,6 @@ from sleepscape.domain.sleep_features import (
     CORE_METRICS,
     MAX_INPUT_BYTES,
     SleepAnalysisError,
-    assemble_model_output,
     build_sleep_input,
     canonical_json,
     input_hash,
@@ -22,29 +21,15 @@ from sleepscape.resources import (
     contract_schema,
     prompt_metadata,
     system_prompt,
-    validate_model_output,
     validate_sleep_input,
     validate_sleep_output,
 )
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "docs/contracts/sleep-analysis.example.json"
+EXAMPLE = Path(__file__).with_name("fixtures") / "published-sleep-report.json"
 
 
 def example():
     return json.loads(EXAMPLE.read_text())
-
-
-def model_example():
-    x = example()
-    candidate = {
-        key: copy.deepcopy(x["output"][key])
-        for key in ("summary", "observations", "hypotheses", "actions")
-    }
-    candidate["summary"]["evidence_ids"] = candidate["summary"]["evidence_ids"][:6]
-    for group in ("observations", "hypotheses"):
-        for row in candidate[group]:
-            row.pop("evidence_level")
-    return x["input"], candidate
 
 
 def build(n=None, e=None, **kwargs):
@@ -99,194 +84,8 @@ def test_light_bus_gap_keeps_weighted_light_stats_and_interval_warning():
     assert warning["metric"] == "illuminance_lux"
     assert (warning["expected"], warning["observed"]) == (60, 58)
     assert c["channels"]["illuminance_lux"]["usable_count"] == 238
-    assert p["timeline"][0]["coverage"]["illuminance_lux"]["usable_count"] == 238
     assert facts(p)["environment.illuminance_mean"]["value"] == pytest.approx(3 * 58 / 238)
     assert "sampling_gaps_present" in p["required_limitations"]
-
-
-def test_small_model_contract_has_only_authored_fields_and_short_prompt():
-    schema = contract_schema("model_output")
-    assert (
-        set(schema["required"])
-        == set(schema["properties"])
-        == {
-            "summary",
-            "observations",
-            "hypotheses",
-            "actions",
-        }
-    )
-    assert schema["type"] == "object" and schema["additionalProperties"] is False
-    assert len(canonical_json(schema).encode()) < 2200
-    assert len(system_prompt().encode()) <= 2100
-    assert prompt_metadata()["prompt_version"] == "sleep-observation-8"
-    serialized = canonical_json(schema)
-    for field in ("input_hash", "night_date", "evidence_level", "limitations", "status"):
-        assert f'"{field}"' not in serialized
-    assert schema["$defs"]["modelEvidenceIds"]["maxItems"] == 6
-    assert contract_schema("output")["$defs"]["evidenceIds"]["maxItems"] == 12
-
-
-@pytest.mark.parametrize(
-    "summary",
-    [
-        {"text": "这晚睡眠数据齐全，可以分析睡眠。", "evidence_ids": ["F001"]},
-        {"text": "昨晚睡得很踏实。", "evidence_ids": ["F007"]},
-    ],
-)
-def test_new_sleep_summary_requires_sleep_evidence_and_rejects_collection_lead(summary):
-    source, candidate = model_example()
-    candidate["summary"] = summary
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-    historical = example()["output"]
-    historical["summary"] = summary
-    validate_sleep_output(historical, source)
-
-
-def test_model_assembly_is_pure_and_keeps_existing_report_contract():
-    source, candidate = model_example()
-    temperature = facts(source)["environment.temperature_mean"]["id"]
-    candidate["hypotheses"] = [
-        {
-            "factor": "temperature",
-            "text": "温度可能与睡眠体验有关，无法判断原因。",
-            "evidence_ids": [temperature],
-            "alternatives": ["未记录的生活因素也可能影响体验。"],
-        }
-    ]
-    before = copy.deepcopy((source, candidate))
-    report = validate_model_output(candidate, source)
-    assert report == assemble_model_output(candidate, source)
-    assert (source, candidate) == before
-    assert report["schema_version"] == "sleep-output-1"
-    assert report["status"] == "complete"
-    assert report["night_date"] == source["night_date"]
-    assert report["input_hash"] == source["input_hash"]
-    assert report["input_quality_state"] == source["completeness"]["quality_state"]
-    assert report["limitations"] == source["required_limitations"]
-    for group in ("observations", "hypotheses"):
-        assert all(row["evidence_level"] == "limited" for row in report[group])
-        assert [
-            {key: value for key, value in row.items() if key != "evidence_level"}
-            for row in report[group]
-        ] == candidate[group]
-    assert report["summary"] == candidate["summary"] and report["actions"] == candidate["actions"]
-    validate_sleep_output(report, source)
-    report["limitations"].clear()
-    report["summary"]["text"] = "changed"
-    report["observations"][0]["evidence_ids"].clear()
-    assert (source, candidate) == before
-
-
-@pytest.mark.parametrize(
-    "field",
-    ["schema_version", "night_date", "input_hash", "input_quality_state", "status", "limitations"],
-)
-def test_wire_cannot_override_program_owned_metadata(field):
-    source, candidate = model_example()
-    candidate[field] = "SYNTHETIC_OVERRIDE"
-    for validator in (validate_model_output, assemble_model_output):
-        with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-            validator(candidate, source)
-
-
-@pytest.mark.parametrize("field", ["summary", "observations", "hypotheses", "actions"])
-def test_wire_missing_top_level_fields_are_not_filled(field):
-    source, candidate = model_example()
-    candidate.pop(field)
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-@pytest.mark.parametrize("group", ["summary", "observations", "hypotheses", "actions"])
-def test_wire_never_supplies_missing_model_text(group):
-    source, candidate = model_example()
-    if group == "hypotheses":
-        candidate[group] = [
-            {
-                "factor": "temperature",
-                "evidence_ids": [facts(source)["environment.temperature_mean"]["id"]],
-                "alternatives": ["生活背景未知。"],
-                "text": "可能有关。",
-            }
-        ]
-    row = candidate[group] if group == "summary" else candidate[group][0]
-    row.pop("text")
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-@pytest.mark.parametrize("group", ["observations", "hypotheses"])
-def test_wire_cannot_self_assign_evidence_level(group):
-    source, candidate = model_example()
-    if group == "hypotheses":
-        candidate[group] = [
-            {
-                "factor": "temperature",
-                "text": "可能有关。",
-                "evidence_ids": [facts(source)["environment.temperature_mean"]["id"]],
-                "alternatives": ["生活背景未知。"],
-            }
-        ]
-    candidate[group][0]["evidence_level"] = "limited"
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-@pytest.mark.parametrize("count", [0, 3, 7])
-def test_wire_observation_count_cannot_be_empty_or_outside_current_bound(count):
-    source, candidate = model_example()
-    candidate["observations"] = (candidate["observations"] * 2)[:count]
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-@pytest.mark.parametrize("group", ["hypotheses", "actions"])
-def test_wire_optional_claims_are_bounded_but_can_be_empty(group):
-    source, candidate = model_example()
-    candidate["hypotheses"] = []
-    candidate["actions"] = []
-    validate_model_output(candidate, source)
-    if group == "hypotheses":
-        row = {
-            "factor": "temperature",
-            "text": "可能有关。",
-            "evidence_ids": [facts(source)["environment.temperature_mean"]["id"]],
-            "alternatives": ["生活背景未知。"],
-        }
-    else:
-        row = copy.deepcopy(example()["output"]["actions"][0])
-    candidate[group] = [copy.deepcopy(row) for _ in range(3)]
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        lambda p: p["summary"].update(evidence_ids=[]),
-        lambda p: p["summary"].update(evidence_ids=["F999"]),
-        lambda p: p["summary"].update(evidence_ids=["F001", "F001"]),
-        lambda p: p["summary"].update(evidence_ids=[f"F{i:03d}" for i in range(1, 8)]),
-        lambda p: p["summary"].update(text="睡眠有缺采，温度达到20度。"),
-        lambda p: p["summary"].update(text="睡眠有缺采，建议服用药物。"),
-        lambda p: p["observations"][1].update(category=p["observations"][0]["category"]),
-        lambda p: p["observations"][0].update(evidence_ids=["F007"]),
-    ],
-)
-def test_model_assembly_does_not_repair_bad_content_or_references(mutation):
-    source, candidate = model_example()
-    mutation(candidate)
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
-        validate_model_output(candidate, source)
-
-
-def test_model_input_must_be_validated_before_any_assembly():
-    source, candidate = model_example()
-    source["readiness"] = "waiting_data"
-    with pytest.raises(SleepAnalysisError, match="invalid_analysis_input"):
-        validate_model_output(candidate, source)
 
 
 def test_stored_full_output_retains_historical_levels_and_refusal_contract():
@@ -330,7 +129,6 @@ def test_sound_mean_is_energy_weighted_and_not_arithmetic_db_mean():
     value = facts(p)["environment.sound_energy_mean"]["value"]
     assert value == pytest.approx(10 * math.log10((0.1 + 0.01) / 2))
     assert value != pytest.approx(-15)
-    assert p["timeline"][0]["sound_dbfs"] == value
 
 
 def test_partial_count_uses_valid_seconds_and_keeps_gap_constraints():
@@ -387,75 +185,6 @@ def test_boundary_statistics_remain_whole_minute_and_documented():
     validate_sleep_input(p)
     assert facts(p)["environment.temperature_mean"]["valid_n"] == 18
     assert "minute_boundary_estimate" in p["required_limitations"]
-    assert p["timeline"][0]["start_at"] == n["sleep"]["start_at"]
-
-
-def baseline(n, count=8):
-    result = []
-    for i in range(1, count + 1):
-        item = copy.deepcopy(n)
-        when = DAY - timedelta(days=i)
-        item["date"] = when.isoformat()
-        for card in item["cards"].values():
-            card["source_date"] = when.isoformat()
-        item["cards"]["average_heart_rate"]["value"] = 50 + i
-        result.append(item)
-    return result
-
-
-def test_baselines_have_independent_valid_counts_and_no_future_leakage():
-    n, e = sample()
-    old = baseline(n)
-    old[0]["cards"]["night_average_hrv"]["state"] = "stale"
-    old[1]["cards"]["night_average_hrv"]["state"] = "missing"
-    future = copy.deepcopy(n)
-    future["date"] = (DAY + timedelta(days=1)).isoformat()
-    p = build(n, e, baseline_nights=[*old, future, n])
-    validate_sleep_input(p)
-    f = facts(p)
-    assert f["baseline.average_heart_rate"]["valid_n"] == 8
-    assert f["baseline.average_heart_rate"]["value"] == 54.5
-    assert f["comparison.average_heart_rate_delta"]["value"] == 0.5
-    assert f["baseline.night_average_hrv"]["valid_n"] == 6
-    assert f["baseline.night_average_hrv"]["value"] is None
-    assert "comparison.night_average_hrv_delta" not in f
-    assert f["baseline.sleep_total_minutes"]["expected_n"] == 30
-
-
-def test_duplicate_baseline_source_dates_rejected():
-    n, e = sample()
-    b = baseline(n)
-    with pytest.raises(SleepAnalysisError):
-        build(n, e, baseline_nights=[*b, b[0]])
-
-
-def test_load_comparison_requires_thirty_fresh_complete_days():
-    n, e = sample()
-    n["load_comparison"] = {
-        "state": "available",
-        "target_date": (DAY - timedelta(days=1)).isoformat(),
-        "baseline_start": (DAY - timedelta(days=31)).isoformat(),
-        "baseline_end": (DAY - timedelta(days=2)).isoformat(),
-        "baseline_valid_days": 30,
-        "baseline_fresh_days": 30,
-        "baseline_required_days": 30,
-        "baseline_mean": 10,
-        "change_percent": -100,
-    }
-    assert facts(build(n, e))["comparison.training_load_percent"]["value"] == -100
-    equal = copy.deepcopy(n)
-    equal["cards"]["training_load"].update(value=10, activity_count=1, reason=None)
-    equal["load_comparison"]["change_percent"] = 0
-    payload = build(equal, e)
-    delta = facts(payload)["comparison.training_load_percent"]
-    assert delta["comparison_text"] == "前日负荷等于个人均值"
-    delta.update(value=1e-12, comparison_text="前日负荷高于个人均值")
-    with pytest.raises(SleepAnalysisError):
-        validate_sleep_input(mutate_hash(payload))
-    for patch in [{"baseline_fresh_days": 29}, {"baseline_mean": 0}, {"state": "stale"}]:
-        altered = copy.deepcopy(n)
-        altered["load_comparison"].update(patch)
-        assert "comparison.training_load_percent" not in facts(build(altered, e))
 
 
 def test_hash_ignores_only_retrieval_time_and_display_compatibility():
@@ -468,12 +197,12 @@ def test_hash_ignores_only_retrieval_time_and_display_compatibility():
     assert input_hash(p) != input_hash(q)
 
 
-def test_optional_timeline_is_removed_before_required_facts_and_warnings():
+def test_long_night_preserves_required_facts_within_budget():
     n, e = sample(240)
     p = build(n, e)
     validate_sleep_input(p)
     assert len(canonical_json(p).encode()) <= MAX_INPUT_BYTES
-    assert p["timeline"] == [] and "timeline_omitted_for_budget" in p["required_limitations"]
+    assert p["timeline"] == []
     assert set(CORE_METRICS) <= set(facts(p))
 
 
@@ -627,14 +356,6 @@ def test_merged_event_is_kept_but_unknown_event_source_is_not_used():
     assert build(n, e)["events"] == []
 
 
-def test_changed_derived_difference_with_new_hash_is_rejected():
-    n, e = sample()
-    p = build(n, e, baseline_nights=baseline(n))
-    facts(p)["comparison.average_heart_rate_delta"]["value"] += 1
-    with pytest.raises(SleepAnalysisError):
-        validate_sleep_input(mutate_hash(p))
-
-
 def test_falsely_complete_sampling_state_with_new_hash_is_rejected():
     p = example()["input"]
     p["completeness"]["quality_state"] = "complete"
@@ -768,121 +489,3 @@ def test_recording_medication_context_is_allowed_as_action_without_treatment():
     x["output"]["actions"][0]["text"] = "记录用药情况，然后服用药物。"
     with pytest.raises(SleepAnalysisError, match="invalid_analysis_output"):
         validate_sleep_output(x["output"], x["input"])
-
-
-def test_new_nightly_comparisons_citations_and_historical_reader():
-    night, env = sample()
-    history = baseline(night)
-    for item in history:
-        item["cards"]["night_average_hrv"]["value"] = (
-            night["cards"]["night_average_hrv"]["value"] + 1
-        )
-    source = build(night, env, baseline_nights=history, morning_feeling="fair")
-    f = facts(source)
-    hr, hrv = (
-        f["comparison." + name + "_delta"] for name in ("average_heart_rate", "night_average_hrv")
-    )
-    assert hr["comparison_text"] == "夜间平均心率高于个人均值"
-    assert hrv["comparison_text"] == "夜间HRV低于个人均值"
-    from test_sleep_analysis_service import response_for
-
-    from sleepscape.services.sleep_analysis import _request
-
-    reply = json.loads(response_for(_request(source)).text)
-    body = next(r for r in reply["observations"] if r["category"] == "body_signals")
-    body["text"] = hr["comparison_text"] + "，" + hrv["comparison_text"] + "。"
-    body["evidence_ids"].extend([hr["id"], hrv["id"]])
-    stored = validate_model_output(reply, source)
-    unsigned = copy.deepcopy(source)
-    facts(unsigned)[hr["metric"]].pop("comparison_text")
-    validate_sleep_input(mutate_hash(unsigned))
-    with pytest.raises(SleepAnalysisError):
-        validate_model_output(reply, unsigned)
-    for wrong in (
-        body["text"] + "两者方向一致。",
-        body["text"].replace("低于", "高于"),
-        body["text"].replace("高于", "略高于"),
-        "并非" + body["text"],
-    ):
-        candidate = copy.deepcopy(reply)
-        candidate["observations"][reply["observations"].index(body)]["text"] = wrong
-        with pytest.raises(SleepAnalysisError):
-            validate_model_output(candidate, source)
-    old = copy.deepcopy(stored)
-    next(r for r in old["observations"] if r["category"] == "body_signals")["text"] += (
-        "两者方向一致。"
-    )
-    validate_sleep_output(old, source)
-    candidate = copy.deepcopy(reply)
-    candidate["summary"]["evidence_ids"].remove("F000")
-    with pytest.raises(SleepAnalysisError):
-        validate_model_output(candidate, source)
-    candidate = copy.deepcopy(reply)
-    candidate["summary"]["text"] += "夜间HRV低于个人均值。"
-    with pytest.raises(SleepAnalysisError):
-        validate_model_output(candidate, source)
-    environment = next(r for r in reply["observations"] if r["category"] == "environment")
-    environment["text"] += "温度波动可在所引范围内核对。"
-    with pytest.raises(SleepAnalysisError):
-        validate_model_output(reply, source)
-    environment["evidence_ids"].extend(
-        f["environment.temperature_" + edge]["id"] for edge in ("min", "max")
-    )
-    validate_model_output(reply, source)
-    forged = copy.deepcopy(source)
-    facts(forged)[hr["metric"]]["comparison_text"] = "夜间平均心率低于个人均值"
-    with pytest.raises(SleepAnalysisError):
-        validate_sleep_input(mutate_hash(forged))
-
-
-def test_constant_source_duration_has_exactly_zero_comparison():
-    night, env = sample()
-    night["cards"]["sleep_seconds"]["value"] = 74
-    source = build(night, env, baseline_nights=baseline(night, count=7))
-    delta = facts(source)["comparison.sleep_total_minutes_delta"]
-    assert delta["value"] == 0
-    assert delta["comparison_text"] == "睡眠时长等于个人均值"
-    delta["value"] = -1e-12
-    delta["comparison_text"] = "睡眠时长短于个人均值"
-    with pytest.raises(SleepAnalysisError):
-        validate_sleep_input(mutate_hash(source))
-
-
-def test_publish_checks_all_assertions_including_second_sentences_and_alternatives():
-    from test_sleep_analysis_service import response_for
-
-    from sleepscape.services.sleep_analysis import _request
-
-    night, env = sample()
-    source = build(night, env, baseline_nights=baseline(night), morning_feeling="fair")
-    reply = json.loads(response_for(_request(source)).text)
-    f = facts(source)
-
-    def rejected(target, field, text):
-        before = target[field]
-        target[field] = text
-        try:
-            with pytest.raises(SleepAnalysisError):
-                validate_model_output(reply, source)
-        finally:
-            target[field] = before
-
-    body = next(r for r in reply["observations"] if r["category"] == "body_signals")
-    rejected(body, "text", "夜间平均心率在个人均值以下。")
-    rejected(body, "text", "心率走低，HRV也走低。")
-    env_row = next(r for r in reply["observations"] if r["category"] == "environment")
-    rejected(env_row, "text", env_row["text"] + "卧室温度有记录。整夜都很稳定。")
-    rejected(reply["summary"], "text", "晨起睡感并非一般。")
-    hyp = {
-        "factor": "temperature",
-        "text": "卧室温度可留作背景。",
-        "evidence_ids": [f["environment.temperature_mean"]["id"]],
-        "alternatives": ["还有未记录的其他因素。"],
-    }
-    reply["hypotheses"] = [hyp]
-    rejected(hyp, "alternatives", ["晨起睡感较差。"])
-    rejected(hyp, "alternatives", ["手表记录了浅睡时长。"])
-    hyp["alternatives"] = ["下次可以记录是否感觉有压力。"]
-    body["evidence_ids"].append(f["comparison.average_heart_rate_delta"]["id"])
-    body["text"] = "另外，昨晚夜间平均心率高于个人均值。"
-    validate_model_output(reply, source)
