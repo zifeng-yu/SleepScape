@@ -80,7 +80,8 @@ def prepared(configured):
 def response_for(request):
     data = json.loads(request.messages[1].content)
     night = data["nights"][-1]
-    assert data["target_date"] == night["night_date"]
+    if request.schema_name == "sleepscape_sleep_report":
+        assert data["target_date"] == night["night_date"]
     result = {
         "summary": {"text": "这晚睡眠较短，手表记录 2 分钟。"},
         "garmin": "结合时长和分期解读。",

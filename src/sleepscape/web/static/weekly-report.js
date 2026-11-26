@@ -110,7 +110,7 @@ function appendReport(body, data, time) {
             body.append(el("p", "weekly-report-note", "报告结构暂不可读取"));
             return;
         }
-        body.append(el("p", "weekly-report-note", `目标夜 ${evidence.target_date} · 共 ${evidence.nights.length} 晚 · 生成于 ${time.dateTime(generated_at)}`));
+        body.append(el("p", "weekly-report-note", `复盘窗口 ${evidence.window.start_date} 至 ${evidence.window.end_date} · 共 ${evidence.nights.length} 晚 · 生成于 ${time.dateTime(generated_at)}`));
         if (data.source_changed === true) body.append(el("p", "weekly-report-note", "生成后观测已更新。"));
         if (data.source_changed === null) body.append(el("p", "weekly-report-note", "当前来源暂不可核对。"));
         appendInterpretation(body, content);

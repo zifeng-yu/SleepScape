@@ -31,7 +31,7 @@ def _validator(kind):
 
 def resource_digest():
     return hashlib.sha256(
-        canonical_json([_schemas(), system_prompt(), contract_schema("model_output")]).encode()
+        canonical_json([_schemas(), contract_schema("model_output")]).encode()
     ).hexdigest()
 
 
@@ -70,11 +70,14 @@ def validate_evidence(value, *, for_generation=False):
 
 def observation_request(value, *, weekly=False, correction=False):
     schema = contract_schema("model_output")
-    prompt = system_prompt() + (
-        "\n" + _schemas()[1] if weekly else "\n只解读目标夜，comparison 填 null。"
-    )
+    prompt = _schemas()[1] if weekly else system_prompt() + "\n只解读目标夜，comparison 填 null。"
     prompt += "\n" + canonical_json(schema)
-    messages = [ChatMessage("system", prompt), ChatMessage("user", canonical_json(value))]
+    messages = [
+        ChatMessage("system", prompt),
+        ChatMessage(
+            "user", canonical_json({k: value[k] for k in ("window", "nights")} if weekly else value)
+        ),
+    ]
     if correction:
         messages.append(ChatMessage("user", "请重新按给定 JSON Schema 返回完整对象。"))
     if (

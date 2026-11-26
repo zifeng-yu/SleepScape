@@ -14,7 +14,7 @@ export function appendInterpretation(body, content) {
         ["佳明记录", [content.garmin]],
         ["卧室环境", [content.environment]],
         ["晨起睡感", [content.feeling]],
-        ["与前几晚对照", [content.comparison]],
+        ["跨晚比较", [content.comparison]],
         ["可能的原因", content.possible_reasons],
     ]) {
         if (!lines.some(Boolean)) continue;

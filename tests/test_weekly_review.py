@@ -19,7 +19,6 @@ from sleepscape.domain.morning_feeling import Feeling
 from sleepscape.models.base import ModelError, ModelResult
 from sleepscape.models.openai_compatible import MAX_MESSAGE_BYTES, _payload
 from sleepscape.models.settings import load_model_settings
-from sleepscape.resources.weekly_review import validate_evidence
 from sleepscape.services import daily, readiness, sleep_analysis, weekly_review
 from sleepscape.services.backup import BackupError, check_restore, create_backup
 from sleepscape.services.backup_bundle import create_bundle, validate_bundle
@@ -47,7 +46,9 @@ def prepared(configured, monkeypatch):
 def good_reply(_model, request):
     from test_sleep_analysis_service import response_for
 
-    validate_evidence(json.loads(request.messages[1].content), for_generation=True)
+    data = json.loads(request.messages[1].content)
+    assert set(data) == {"window", "nights"}
+    assert data["window"]["end_date"] == data["nights"][-1]["night_date"]
     return response_for(request)
 
 
@@ -104,7 +105,7 @@ def test_actual_window_all_nights_checked_and_one_physical_call(prepared, length
     assert weekly_review.run_review(settings, cutoff, now=now)["model_calls"] == 0
     view = weekly_review.review_view(settings, cutoff, now=now)
     assert view["source_changed"] is False
-    assert view["report"]["evidence"] == evidence
+    assert view["report"]["evidence"] == {**evidence, "target_date": str(cutoff)}
     assert "source_hash" not in json.dumps(view)
     later = now + timedelta(days=40)
     assert weekly_review.review_view(settings, cutoff, now=later)["source_changed"] is False
@@ -341,6 +342,10 @@ def test_larger_valid_input_and_openai_transport(prepared):
     assert evidence["target_date"] == str(days[-1])
     assert set(evidence) == {"target_date", "window", "nights"}
     request = request_for(evidence)
+
+    assert json.loads(request.messages[1].content) == {k: evidence[k] for k in ("window", "nights")}
+    assert "整个观测窗口" in request.messages[0].content
+    assert "解读目标夜的睡眠" not in request.messages[0].content
     assert len(request.messages[1].content.encode()) <= 24 * 1024
     assert sum(len(message.content.encode()) for message in request.messages) <= MAX_MESSAGE_BYTES
     raw, _ = _payload(load_model_settings(settings), request)
